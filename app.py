@@ -1,4 +1,4 @@
-from flask import Flask, render_template_string, jsonify
+from flask import Flask, render_template_string, jsonify, request
 import yfinance as yf
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
@@ -101,7 +101,11 @@ def dashboard():
         </div>
 
         <button class="run-btn" onclick="runBot()" id="runBtn">▶ Run Bot Now</button>
-
+        <div class="search-box" style="margin-bottom: 25px;">
+        <input id="tickerInput" type="text" placeholder="Search any stock... (e.g. TSLA, GOOGL)" 
+        style="width: 100%; padding: 14px; background: #12121a; border: 1px solid #333; border-radius: 12px; color: #fff; font-size: 15px; outline: none;">
+        <div id="searchResult" style="margin-top: 12px;"></div>
+        </div>
         <div class="stocks">
             {% for stock in stocks %}
             <div class="stock-card">
@@ -163,6 +167,50 @@ def dashboard():
                         btn.disabled = false;
                     });
             }
+        document.getElementById('tickerInput').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+        const ticker = this.value.trim().toUpperCase();
+        if (!ticker) return;
+        const result = document.getElementById('searchResult');
+        result.innerHTML = '<p style="color:#555">Analyzing ' + ticker + '...</p>';
+        fetch('/search?ticker=' + ticker)
+            .then(res => res.json())
+            .then(data => {
+                if (data.error) {
+                    result.innerHTML = '<p style="color:#ff4455">Could not find ' + ticker + '</p>';
+                } else {
+                    result.innerHTML = `
+                        <div style="background:#12121a; border:1px solid #222; border-radius:12px; padding:18px;">
+                            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                                <span style="font-size:20px; font-weight:bold;">${data.ticker}</span>
+                                <span style="padding:4px 10px; border-radius:20px; font-size:13px;
+                                    ${data.prediction === 1 ? 'background:#00ff8822; color:#00ff88; border:1px solid #00ff8844;' : 'background:#ff445522; color:#ff4455; border:1px solid #ff445544;'}">
+                                    ${data.prediction === 1 ? '📈 BUY' : '📉 SELL'}
+                                </span>
+                            </div>
+                            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                                <div style="background:#0a0a0f; border-radius:8px; padding:8px 12px;">
+                                    <div style="color:#555; font-size:10px; text-transform:uppercase;">Price</div>
+                                    <div style="font-size:15px; font-weight:bold;">$${data.price}</div>
+                                </div>
+                                <div style="background:#0a0a0f; border-radius:8px; padding:8px 12px;">
+                                    <div style="color:#555; font-size:10px; text-transform:uppercase;">RSI</div>
+                                    <div style="font-size:15px; font-weight:bold; color:${data.rsi > 70 ? '#ff4455' : data.rsi < 30 ? '#00ff88' : '#fff'}">${data.rsi}</div>
+                                </div>
+                                <div style="background:#0a0a0f; border-radius:8px; padding:8px 12px;">
+                                    <div style="color:#555; font-size:10px; text-transform:uppercase;">MA50</div>
+                                    <div style="font-size:15px; font-weight:bold;">${data.ma50}</div>
+                                </div>
+                                <div style="background:#0a0a0f; border-radius:8px; padding:8px 12px;">
+                                    <div style="color:#555; font-size:10px; text-transform:uppercase;">MA200</div>
+                                    <div style="font-size:15px; font-weight:bold;">${data.ma200}</div>
+                                </div>
+                            </div>
+                        </div>`;
+                }
+            });
+    }
+});
         </script>
     </body>
     </html>
@@ -173,6 +221,16 @@ def dashboard():
 def run():
     run_bot()
     return jsonify({"status": "done"})
+
+@app.route("/search")
+def search():
+    ticker = request.args.get("ticker", "").upper()
+    if not ticker:
+        return jsonify({"error": "No ticker provided"})
+    data = analyze_stock(ticker)
+    if not data:
+        return jsonify({"error": "Stock not found"})
+    return jsonify(data)
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0")
