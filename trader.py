@@ -61,12 +61,31 @@ def analyze_stock(ticker):
     prediction = model.predict(latest)[0]
 
     return {
+        rsi = round(history["RSI"].iloc[-1], 2)
+    ma50 = round(history["MA50"].iloc[-1], 2)
+    ma200 = round(history["MA200"].iloc[-1], 2)
+
+    # Calculate confidence
+    rsi_strength = rsi > 80 or rsi < 20
+    rsi_moderate = (70 < rsi <= 80) or (20 <= rsi < 30)
+    ma_gap = abs(ma50 - ma200) / ma200 * 100
+
+    if rsi_strength and ma_gap > 5:
+        confidence = "High"
+    elif rsi_moderate or ma_gap > 2:
+        confidence = "Medium"
+    else:
+        confidence = "Low"
+
+    return {
         "ticker": ticker,
         "price": round(history["Close"].iloc[-1], 2),
-        "rsi": round(history["RSI"].iloc[-1], 2),
-        "ma50": round(history["MA50"].iloc[-1], 2),
-        "ma200": round(history["MA200"].iloc[-1], 2),
-        "prediction": int(prediction)
+        "rsi": rsi,
+        "ma50": ma50,
+        "ma200": ma200,
+        "prediction": int(prediction),
+        "confidence": confidence
+    }
     }
 
 def run_bot():

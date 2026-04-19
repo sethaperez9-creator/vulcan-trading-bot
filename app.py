@@ -185,7 +185,7 @@ def dashboard():
                                 <span style="font-size:20px; font-weight:bold;">${data.ticker}</span>
                                 <span style="padding:4px 10px; border-radius:20px; font-size:13px;
                                     ${data.prediction === 1 ? 'background:#00ff8822; color:#00ff88; border:1px solid #00ff8844;' : 'background:#ff445522; color:#ff4455; border:1px solid #ff445544;'}">
-                                    ${data.prediction === 1 ? '📈 BUY' : '📉 SELL'}
+                                    ${data.prediction === 1 ? '📈 BUY' : '📉 SELL'} · ${data.confidence} Confidence
                                 </span>
                             </div>
                             <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
