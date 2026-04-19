@@ -36,13 +36,25 @@ def dashboard():
                 total += pos["shares"] * s["price"]
 
     returns = round(((total - 10000) / 10000) * 100, 2)
-
+# Market summary
+    market = []
+    for ticker, name in [("SPY", "S&P 500"), ("QQQ", "Nasdaq"), ("DIA", "Dow Jones")]:
+        try:
+            d = yf.Ticker(ticker).history(period="2d")
+            if len(d) >= 2:
+                price = round(d["Close"].iloc[-1], 2)
+                prev = round(d["Close"].iloc[-2], 2)
+                change = round(((price - prev) / prev) * 100, 2)
+                market.append({"name": name, "price": price, "change": change})
+        except:
+            pass
     html = """
     <!DOCTYPE html>
     <html>
     <head>
         <title>Vulcan Trading Bot</title>
         <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta http-equiv="refresh" content="300">
         <style>
             * { box-sizing: border-box; margin: 0; padding: 0; }
             body { font-family: 'Segoe UI', sans-serif; background: #0a0a0f; color: #fff; padding: 20px; }
@@ -55,7 +67,15 @@ def dashboard():
             .green { color: #00ff88; }
             .red { color: #ff4455; }
             .stocks { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px; margin-bottom: 25px; }
-            .stock-card { background: #12121a; border: 1px solid #222; border-radius: 12px; padding: 18px; }
+            @media (max-width: 600px) {
+                .stocks { grid-template-columns: 1fr; }
+                .summary { grid-template-columns: 1fr 1fr; }
+                h1 { font-size: 20px; }
+                .run-btn { font-size: 14px; padding: 12px; }
+            }
+            .stock-card { background: #12121a; border-radius: 12px; padding: 18px; }
+            .stock-card-buy { border: 1px solid #00ff8844; }
+            .stock-card-sell { border: 1px solid #ff445544; }
             .stock-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
             .ticker { font-size: 20px; font-weight: bold; }
             .signal { font-size: 13px; padding: 4px 10px; border-radius: 20px; }
@@ -80,8 +100,20 @@ def dashboard():
         </style>
     </head>
     <body>
-        <h1>⚡ Vulcan Trading Bot</h1>
+    <h1>⚡ Vulcan Trading Bot</h1>
         <p class="subtitle">Paper trading dashboard — updates on demand</p>
+
+        <div class="summary" style="margin-bottom:15px;">
+            {% for index in market %}
+            <div class="summary-card">
+                <div class="label">{{ index.name }}</div>
+                <div class="value {{ 'green' if index.change >= 0 else 'red' }}">${{ index.price }}</div>
+                <div style="font-size:13px; color:{{ '#00ff88' if index.change >= 0 else '#ff4455' }}">
+                    {{ '+' if index.change >= 0 else '' }}{{ index.change }}%
+                </div>
+            </div>
+            {% endfor %}
+        </div>    
 
         <div class="summary">
             <div class="summary-card">
@@ -118,7 +150,7 @@ def dashboard():
 
         <div class="stocks">
             {% for stock in stocks %}
-            <div class="stock-card">
+            <div class="stock-card {{ 'stock-card-buy' if stock.prediction == 1 else 'stock-card-sell' }}">
                 <div class="stock-header">
                     <div class="ticker">{{ stock.ticker }}</div>
                     <div class="signal {{ 'signal-up' if stock.prediction == 1 else 'signal-down' }}">
@@ -289,7 +321,7 @@ def dashboard():
     </body>
     </html>
     """
-    return render_template_string(html, stocks=stocks, portfolio=portfolio, total=total, returns=returns)
+    return render_template_string(html, stocks=stocks, portfolio=portfolio, total=total, returns=returns, market=market)
 
 @app.route("/run")
 def run():
@@ -328,3 +360,4 @@ def recommend():
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0")
+    
