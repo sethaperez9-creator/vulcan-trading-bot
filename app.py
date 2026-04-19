@@ -207,7 +207,45 @@ def dashboard():
             </div>
             {% endfor %}
         </div>
+<div style="background:#12121a; border:1px solid #222; border-radius:12px; padding:18px; margin-bottom:25px;">
+            <h2 style="color:#888; font-size:14px; text-transform:uppercase; letter-spacing:1px; margin-bottom:15px;">🔔 Price Alerts</h2>
+            
+            <div style="display:grid; grid-template-columns:1fr 1fr 1fr auto; gap:10px; margin-bottom:15px;">
+                <input id="alertTicker" type="text" placeholder="Ticker (e.g. AAPL)"
+                    style="padding:12px; background:#0a0a0f; border:1px solid #333; border-radius:8px; color:#fff; font-size:14px; outline:none;">
+                <input id="alertTarget" type="number" placeholder="Target price"
+                    style="padding:12px; background:#0a0a0f; border:1px solid #333; border-radius:8px; color:#fff; font-size:14px; outline:none;">
+                <select id="alertDirection"
+                    style="padding:12px; background:#0a0a0f; border:1px solid #333; border-radius:8px; color:#fff; font-size:14px; outline:none;">
+                    <option value="above">Rises above</option>
+                    <option value="below">Falls below</option>
+                </select>
+                <button onclick="addAlert()"
+                    style="padding:12px 20px; background:#00ff88; color:#000; border:none; border-radius:8px; font-weight:bold; cursor:pointer;">
+                    + Add
+                </button>
+            </div>
 
+            <div id="alertsList" style="margin-bottom:15px;">
+                <p style="color:#444; font-size:13px;">Loading alerts...</p>
+            </div>
+
+            <div style="border-top:1px solid #222; padding-top:15px; margin-top:15px;">
+                <h3 style="color:#888; font-size:12px; text-transform:uppercase; letter-spacing:1px; margin-bottom:10px;">Email Settings</h3>
+                <div style="display:grid; grid-template-columns:1fr 1fr 1fr auto; gap:10px;">
+                    <input id="settingsEmail" type="email" placeholder="Your email"
+                        style="padding:12px; background:#0a0a0f; border:1px solid #333; border-radius:8px; color:#fff; font-size:14px; outline:none;">
+                    <input id="settingsGmailUser" type="email" placeholder="Gmail sender"
+                        style="padding:12px; background:#0a0a0f; border:1px solid #333; border-radius:8px; color:#fff; font-size:14px; outline:none;">
+                    <input id="settingsGmailPass" type="password" placeholder="Gmail app password"
+                        style="padding:12px; background:#0a0a0f; border:1px solid #333; border-radius:8px; color:#fff; font-size:14px; outline:none;">
+                    <button onclick="saveSettings()"
+                        style="padding:12px 20px; background:#1a1a2e; color:#00ff88; border:1px solid #00ff88; border-radius:8px; font-weight:bold; cursor:pointer;">
+                        Save
+                    </button>
+                </div>
+            </div>
+        </div>
         <div class="trades">
             <h2>Trade History</h2>
             {% if portfolio.trades %}
@@ -363,6 +401,68 @@ def dashboard():
                 .then(() => location.reload())
                 .catch(err => alert('Error removing stock'));
             }
+        function loadAlerts() {
+                fetch('/alerts')
+                    .then(res => res.json())
+                    .then(data => {
+                        const div = document.getElementById('alertsList');
+                        if (data.triggered.length > 0) {
+                            data.triggered.forEach(alert => {
+                                const banner = document.createElement('div');
+                                banner.style = 'background:#00ff8822; border:1px solid #00ff88; border-radius:8px; padding:10px; margin-bottom:8px; color:#00ff88; font-size:13px;';
+                                banner.innerHTML = `🔔 ${alert.ticker} hit $${alert.current_price} (target: $${alert.target} ${alert.direction})`;
+                                document.body.insertBefore(banner, document.body.firstChild);
+                            });
+                        }
+                        if (data.alerts.length === 0) {
+                            div.innerHTML = '<p style="color:#444; font-size:13px;">No active alerts.</p>';
+                        } else {
+                            div.innerHTML = data.alerts.map((alert, i) => `
+                                <div style="padding:10px; background:#0a0a0f; border-radius:8px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
+                                    <span style="font-weight:bold;">${alert.ticker}</span>
+                                    <span style="color:#555; font-size:13px;">${alert.direction} $${alert.target}</span>
+                                    <span onclick="removeAlert(${i})" style="color:#ff4455; cursor:pointer;">× Remove</span>
+                                </div>
+                            `).join('');
+                        }
+                    });
+            }
+
+            function addAlert() {
+                const ticker = document.getElementById('alertTicker').value.trim().toUpperCase();
+                const target = document.getElementById('alertTarget').value;
+                const direction = document.getElementById('alertDirection').value;
+                if (!ticker || !target) return;
+                fetch('/add_alert', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ticker, target: parseFloat(target), direction})
+                })
+                .then(() => loadAlerts());
+            }
+
+            function removeAlert(index) {
+                fetch('/remove_alert', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({index})
+                })
+                .then(() => loadAlerts());
+            }
+
+            function saveSettings() {
+                const email = document.getElementById('settingsEmail').value;
+                const gmail_user = document.getElementById('settingsGmailUser').value;
+                const gmail_pass = document.getElementById('settingsGmailPass').value;
+                fetch('/save_settings', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({email, gmail_user, gmail_pass})
+                })
+                .then(() => alert('Settings saved!'));
+            }
+
+            loadAlerts();
         </script>
     </body>
     </html>
@@ -423,6 +523,50 @@ def remove_stock():
         watchlist.remove(ticker)
         save_watchlist(watchlist)
     return jsonify({"status": "removed", "watchlist": watchlist})
+
+@app.route("/alerts")
+def get_alerts():
+    from trader import load_alerts, check_alerts, load_settings, send_alert_email
+    triggered = check_alerts()
+    settings = load_settings()
+    for alert in triggered:
+        send_alert_email(alert, settings)
+    alerts = load_alerts()
+    return jsonify({"alerts": alerts, "triggered": triggered})
+
+@app.route("/add_alert", methods=["POST"])
+def add_alert():
+    from trader import load_alerts, save_alerts
+    data = request.json
+    ticker = data.get("ticker", "").upper()
+    target = float(data.get("target", 0))
+    direction = data.get("direction", "above")
+    email = data.get("email", "")
+    if not ticker or not target:
+        return jsonify({"error": "Missing data"})
+    alerts = load_alerts()
+    alerts.append({"ticker": ticker, "target": target, "direction": direction, "email": email})
+    save_alerts(alerts)
+    return jsonify({"status": "added"})
+
+@app.route("/remove_alert", methods=["POST"])
+def remove_alert():
+    from trader import load_alerts, save_alerts
+    data = request.json
+    index = data.get("index", -1)
+    alerts = load_alerts()
+    if 0 <= index < len(alerts):
+        alerts.pop(index)
+        save_alerts(alerts)
+    return jsonify({"status": "removed"})
+
+@app.route("/save_settings", methods=["POST"])
+def save_settings_route():
+    from trader import SETTINGS_FILE
+    data = request.json
+    with open(SETTINGS_FILE, "w") as f:
+        json.dump(data, f)
+    return jsonify({"status": "saved"})
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0")
