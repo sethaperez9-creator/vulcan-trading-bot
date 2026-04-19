@@ -1,4 +1,5 @@
-ccxt
-python-dotenv
+yfinance
 pandas
-schedule
+scikit-learn
+flask
+numpy
