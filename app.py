@@ -232,6 +232,13 @@ def dashboard():
 
             <div style="border-top:1px solid #222; padding-top:15px; margin-top:15px;">
                 <h3 style="color:#888; font-size:12px; text-transform:uppercase; letter-spacing:1px; margin-bottom:10px;">Email Settings</h3>
+                <p style="color:#555; font-size:12px; margin-bottom:10px; line-height:1.6;">
+                    To receive email alerts, enter your email address, a Gmail account to send from, and a Gmail App Password 
+                    (not your regular password). To get an App Password: go to 
+                    <span style="color:#00ff88;">myaccount.google.com → Security → App Passwords</span>, 
+                    make sure 2-Step Verification is enabled, create a new app password named "Vulcan", 
+                    and paste the 16-character code below.
+                </p>
                 <div style="display:grid; grid-template-columns:1fr 1fr 1fr auto; gap:10px;">
                     <input id="settingsEmail" type="email" placeholder="Your email"
                         style="padding:12px; background:#0a0a0f; border:1px solid #333; border-radius:8px; color:#fff; font-size:14px; outline:none;">
