@@ -4,3 +4,4 @@ scikit-learn
 flask
 numpy
 python-dotenv
+plotly

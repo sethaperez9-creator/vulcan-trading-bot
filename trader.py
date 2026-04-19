@@ -11,6 +11,8 @@ from email.mime.multipart import MIMEMultipart
 
 PORTFOLIO_FILE = "portfolio.json"
 WATCHLIST_FILE = "watchlist.json"
+ALERTS_FILE = "alerts.json"
+SETTINGS_FILE = "settings.json"
 
 def load_watchlist():
     if os.path.exists(WATCHLIST_FILE):
@@ -22,21 +24,79 @@ def save_watchlist(watchlist):
     with open(WATCHLIST_FILE, "w") as f:
         json.dump(watchlist, f)
 
-WATCHLIST = load_watchlist()
-
 def load_portfolio():
     if os.path.exists(PORTFOLIO_FILE):
         with open(PORTFOLIO_FILE, "r") as f:
             return json.load(f)
-    return {
-        "cash": 10000,
-        "positions": {},
-        "trades": []
-    }
+    return {"cash": 10000, "positions": {}, "trades": []}
 
 def save_portfolio(portfolio):
     with open(PORTFOLIO_FILE, "w") as f:
         json.dump(portfolio, f)
+
+def load_alerts():
+    if os.path.exists(ALERTS_FILE):
+        with open(ALERTS_FILE, "r") as f:
+            return json.load(f)
+    return []
+
+def save_alerts(alerts):
+    with open(ALERTS_FILE, "w") as f:
+        json.dump(alerts, f)
+
+def load_settings():
+    if os.path.exists(SETTINGS_FILE):
+        with open(SETTINGS_FILE, "r") as f:
+            return json.load(f)
+    return {"email": "", "gmail_user": "", "gmail_pass": ""}
+
+def send_alert_email(alert, settings):
+    if not settings["email"] or not settings["gmail_user"] or not settings["gmail_pass"]:
+        return
+    try:
+        msg = MIMEMultipart()
+        msg["From"] = settings["gmail_user"]
+        msg["To"] = settings["email"]
+        msg["Subject"] = f"⚡ Vulcan Alert — {alert['ticker']} hit ${alert['current_price']}"
+        body = f"""
+Vulcan Price Alert Triggered!
+
+Stock: {alert['ticker']}
+Target: ${alert['target']} ({alert['direction']})
+Current Price: ${alert['current_price']}
+
+— Vulcan Trading Bot
+        """
+        msg.attach(MIMEText(body, "plain"))
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()
+        server.login(settings["gmail_user"], settings["gmail_pass"])
+        server.send_message(msg)
+        server.quit()
+    except Exception as e:
+        print(f"Email error: {e}")
+
+def check_alerts():
+    alerts = load_alerts()
+    triggered = []
+    remaining = []
+    for alert in alerts:
+        ticker = alert["ticker"]
+        target = alert["target"]
+        direction = alert["direction"]
+        try:
+            price = yf.Ticker(ticker).history(period="1d")["Close"].iloc[-1]
+            price = round(price, 2)
+            if direction == "above" and price >= target:
+                triggered.append({**alert, "current_price": price})
+            elif direction == "below" and price <= target:
+                triggered.append({**alert, "current_price": price})
+            else:
+                remaining.append(alert)
+        except:
+            remaining.append(alert)
+    save_alerts(remaining)
+    return triggered
 
 def analyze_stock(ticker):
     stock = yf.Ticker(ticker)
@@ -79,7 +139,6 @@ def analyze_stock(ticker):
     ma50 = round(history["MA50"].iloc[-1], 2)
     ma200 = round(history["MA200"].iloc[-1], 2)
 
-    # Calculate confidence
     rsi_strength = rsi > 80 or rsi < 20
     rsi_moderate = (70 < rsi <= 80) or (20 <= rsi < 30)
     ma_gap = abs(ma50 - ma200) / ma200 * 100
@@ -100,88 +159,25 @@ def analyze_stock(ticker):
         "prediction": int(prediction),
         "confidence": confidence
     }
-ALERTS_FILE = "alerts.json"
 
-def load_alerts():
-    if os.path.exists(ALERTS_FILE):
-        with open(ALERTS_FILE, "r") as f:
-            return json.load(f)
-    return []
+def get_chart_data(ticker):
+    stock = yf.Ticker(ticker)
+    history = stock.history(period="6mo")
+    history["MA50"] = history["Close"].rolling(window=50).mean()
+    history["MA200"] = history["Close"].rolling(window=200).mean()
+    history.dropna(inplace=True)
 
-def save_alerts(alerts):
-    with open(ALERTS_FILE, "w") as f:
-        json.dump(alerts, f)
+    dates = [str(d.date()) for d in history.index]
+    closes = history["Close"].round(2).tolist()
+    ma50 = history["MA50"].round(2).tolist()
+    ma200 = history["MA200"].round(2).tolist()
 
-def check_alerts():
-    alerts = load_alerts()
-    triggered = []
-    remaining = []
-
-    for alert in alerts:
-        ticker = alert["ticker"]
-        target = alert["target"]
-        direction = alert["direction"]
-
-        try:
-            price = yf.Ticker(ticker).history(period="1d")["Close"].iloc[-1]
-            price = round(price, 2)
-
-            if direction == "above" and price >= target:
-                triggered.append({**alert, "current_price": price})
-            elif direction == "below" and price <= target:
-                triggered.append({**alert, "current_price": price})
-            else:
-                remaining.append(alert)
-        except:
-            remaining.append(alert)
-
-    save_alerts(remaining)
-    return triggered
-
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-
-SETTINGS_FILE = "settings.json"
-
-def load_settings():
-    if os.path.exists(SETTINGS_FILE):
-        with open(SETTINGS_FILE, "r") as f:
-            return json.load(f)
-    return {"email": "", "gmail_user": "", "gmail_pass": ""}
-
-def send_alert_email(alert, settings):
-    if not settings["email"] or not settings["gmail_user"] or not settings["gmail_pass"]:
-        return
-
-    try:
-        msg = MIMEMultipart()
-        msg["From"] = settings["gmail_user"]
-        msg["To"] = settings["email"]
-        msg["Subject"] = f"⚡ Vulcan Alert — {alert['ticker']} hit ${alert['current_price']}"
-
-        body = f"""
-        Vulcan Price Alert Triggered!
-
-        Stock: {alert['ticker']}
-        Target: ${alert['target']} ({alert['direction']})
-        Current Price: ${alert['current_price']}
-
-        — Vulcan Trading Bot
-        """
-
-        msg.attach(MIMEText(body, "plain"))
-        server = smtplib.SMTP("smtp.gmail.com", 587)
-        server.starttls()
-        server.login(settings["gmail_user"], settings["gmail_pass"])
-        server.send_message(msg)
-        server.quit()
-    except Exception as e:
-        print(f"Email error: {e}")
+    return {"dates": dates, "closes": closes, "ma50": ma50, "ma200": ma200}
 
 def run_bot():
     portfolio = load_portfolio()
     date = datetime.now().strftime("%Y-%m-%d")
+    WATCHLIST = load_watchlist()
 
     print(f"\n{'='*50}")
     print(f"Running bot — {date}")
