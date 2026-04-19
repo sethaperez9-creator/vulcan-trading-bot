@@ -253,6 +253,27 @@ def dashboard():
                 </div>
             </div>
         </div>
+        <div style="background:#12121a; border:1px solid #222; border-radius:12px; padding:18px; margin-bottom:25px;">
+            <h2 style="color:#888; font-size:14px; text-transform:uppercase; letter-spacing:1px; margin-bottom:15px;">💼 My Real Portfolio</h2>
+            <p style="color:#555; font-size:12px; margin-bottom:15px;">Enter your real holdings from Webull or any broker to track P&L and get Vulcan's signal on each position.</p>
+            
+            <div style="display:grid; grid-template-columns:1fr 1fr 1fr auto; gap:10px; margin-bottom:15px;">
+                <input id="holdingTicker" type="text" placeholder="Ticker (e.g. AAPL)"
+                    style="padding:12px; background:#0a0a0f; border:1px solid #333; border-radius:8px; color:#fff; font-size:14px; outline:none;">
+                <input id="holdingShares" type="number" placeholder="Shares owned"
+                    style="padding:12px; background:#0a0a0f; border:1px solid #333; border-radius:8px; color:#fff; font-size:14px; outline:none;">
+                <input id="holdingBuyPrice" type="number" placeholder="Avg buy price"
+                    style="padding:12px; background:#0a0a0f; border:1px solid #333; border-radius:8px; color:#fff; font-size:14px; outline:none;">
+                <button onclick="addHolding()"
+                    style="padding:12px 20px; background:#00ff88; color:#000; border:none; border-radius:8px; font-weight:bold; cursor:pointer;">
+                    + Add
+                </button>
+            </div>
+
+            <div id="holdingsList">
+                <p style="color:#444; font-size:13px;">Loading portfolio...</p>
+            </div>
+        </div>
         <div class="trades">
             <h2>Trade History</h2>
             {% if portfolio.trades %}
@@ -470,6 +491,77 @@ def dashboard():
             }
 
             loadAlerts();
+        function loadHoldings() {
+                fetch('/holdings')
+                    .then(res => res.json())
+                    .then(data => {
+                        const div = document.getElementById('holdingsList');
+                        if (data.length === 0) {
+                            div.innerHTML = '<p style="color:#444; font-size:13px;">No holdings added yet.</p>';
+                            return;
+                        }
+                        let totalValue = 0;
+                        let totalPnl = 0;
+                        let html = '';
+                        data.forEach((h, i) => {
+                            totalValue += h.value;
+                            totalPnl += h.pnl;
+                            html += `
+                                <div style="padding:12px; background:#0a0a0f; border-radius:8px; margin-bottom:8px;">
+                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                                        <span style="font-weight:bold; font-size:16px;">${h.ticker}</span>
+                                        <span style="font-size:13px; color:${h.pnl >= 0 ? '#00ff88' : '#ff4455'};">
+                                            ${h.pnl >= 0 ? '+' : ''}$${h.pnl} (${h.pnl_pct}%)
+                                        </span>
+                                        <span onclick="removeHolding(${i})" style="color:#ff4455; cursor:pointer;">× Remove</span>
+                                    </div>
+                                    <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:8px; font-size:12px; color:#555;">
+                                        <div>Shares: <span style="color:#fff;">${h.shares}</span></div>
+                                        <div>Avg Cost: <span style="color:#fff;">$${h.buy_price}</span></div>
+                                        <div>Current: <span style="color:#fff;">$${h.current_price}</span></div>
+                                        <div>Value: <span style="color:#fff;">$${h.value}</span></div>
+                                    </div>
+                                    <div style="margin-top:6px; font-size:12px;">
+                                        Vulcan: <span style="color:${h.signal.includes('BUY') ? '#00ff88' : '#ff4455'}">${h.signal}</span>
+                                        <span style="color:#555; margin-left:8px;">${h.confidence} Confidence</span>
+                                    </div>
+                                </div>`;
+                        });
+                        html += `
+                            <div style="padding:12px; border-top:1px solid #222; margin-top:8px; display:flex; justify-content:space-between;">
+                                <span style="color:#888;">Total Portfolio Value</span>
+                                <span style="font-weight:bold;">$${totalValue.toFixed(2)}</span>
+                                <span style="color:${totalPnl >= 0 ? '#00ff88' : '#ff4455'};">
+                                    ${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)} total P&L
+                                </span>
+                            </div>`;
+                        div.innerHTML = html;
+                    });
+            }
+
+            function addHolding() {
+                const ticker = document.getElementById('holdingTicker').value.trim().toUpperCase();
+                const shares = document.getElementById('holdingShares').value;
+                const buy_price = document.getElementById('holdingBuyPrice').value;
+                if (!ticker || !shares || !buy_price) return;
+                fetch('/add_holding', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ticker, shares: parseFloat(shares), buy_price: parseFloat(buy_price)})
+                })
+                .then(() => loadHoldings());
+            }
+
+            function removeHolding(index) {
+                fetch('/remove_holding', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({index})
+                })
+                .then(() => loadHoldings());
+            }
+
+            loadHoldings();
         </script>
     </body>
     </html>
@@ -574,6 +666,62 @@ def save_settings_route():
     with open(SETTINGS_FILE, "w") as f:
         json.dump(data, f)
     return jsonify({"status": "saved"})
+
+HOLDINGS_FILE = "holdings.json"
+
+def load_holdings():
+    if os.path.exists(HOLDINGS_FILE):
+        with open(HOLDINGS_FILE, "r") as f:
+            return json.load(f)
+    return []
+
+@app.route("/holdings")
+def get_holdings():
+    holdings = load_holdings()
+    enriched = []
+    for h in holdings:
+        data = analyze_stock(h["ticker"])
+        if data:
+            current = data["price"]
+            cost = h["shares"] * h["buy_price"]
+            value = h["shares"] * current
+            pnl = round(value - cost, 2)
+            pnl_pct = round(((value - cost) / cost) * 100, 2)
+            enriched.append({
+                **h,
+                "current_price": current,
+                "value": round(value, 2),
+                "pnl": pnl,
+                "pnl_pct": pnl_pct,
+                "signal": "📈 BUY" if data["prediction"] == 1 else "📉 SELL",
+                "confidence": data["confidence"]
+            })
+    return jsonify(enriched)
+
+@app.route("/add_holding", methods=["POST"])
+def add_holding():
+    data = request.json
+    ticker = data.get("ticker", "").upper()
+    shares = float(data.get("shares", 0))
+    buy_price = float(data.get("buy_price", 0))
+    if not ticker or not shares or not buy_price:
+        return jsonify({"error": "Missing data"})
+    holdings = load_holdings()
+    holdings.append({"ticker": ticker, "shares": shares, "buy_price": buy_price})
+    with open(HOLDINGS_FILE, "w") as f:
+        json.dump(holdings, f)
+    return jsonify({"status": "added"})
+
+@app.route("/remove_holding", methods=["POST"])
+def remove_holding():
+    data = request.json
+    index = data.get("index", -1)
+    holdings = load_holdings()
+    if 0 <= index < len(holdings):
+        holdings.pop(index)
+        with open(HOLDINGS_FILE, "w") as f:
+            json.dump(holdings, f)
+    return jsonify({"status": "removed"})
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0")
