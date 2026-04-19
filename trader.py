@@ -60,8 +60,7 @@ def analyze_stock(ticker):
     latest = pd.DataFrame([latest_row], columns=features)
     prediction = model.predict(latest)[0]
 
-    return {
-        rsi = round(history["RSI"].iloc[-1], 2)
+    rsi = round(history["RSI"].iloc[-1], 2)
     ma50 = round(history["MA50"].iloc[-1], 2)
     ma200 = round(history["MA200"].iloc[-1], 2)
 
@@ -86,7 +85,6 @@ def analyze_stock(ticker):
         "prediction": int(prediction),
         "confidence": confidence
     }
-    }
 
 def run_bot():
     portfolio = load_portfolio()
@@ -108,7 +106,7 @@ def run_bot():
         prediction = data["prediction"]
         position = portfolio["positions"].get(ticker, {"shares": 0, "buy_price": 0})
 
-        print(f"Price: ${price} | RSI: {data['rsi']} | Prediction: {'UP 📈' if prediction == 1 else 'DOWN 📉'}")
+        print(f"Price: ${price} | RSI: {data['rsi']} | Prediction: {'UP 📈' if prediction == 1 else 'DOWN 📉'} | Confidence: {data['confidence']}")
 
         if prediction == 1 and position["shares"] == 0 and portfolio["cash"] > price:
             allocation = portfolio["cash"] * 0.2
