@@ -5,7 +5,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 import json
 import os
-from trader import analyze_stock, run_bot, WATCHLIST
+from trader import analyze_stock, run_bot, load_watchlist, save_watchlist
 
 app = Flask(__name__)
 PORTFOLIO_FILE = "portfolio.json"
@@ -21,6 +21,7 @@ def dashboard():
     portfolio = load_portfolio()
     stocks = []
 
+    WATCHLIST = load_watchlist()
     for ticker in WATCHLIST:
         data = analyze_stock(ticker)
         if data:
@@ -134,6 +135,27 @@ def dashboard():
             </div>
         </div>
 
+        
+        <div style="background:#12121a; border:1px solid #222; border-radius:12px; padding:18px; margin-bottom:25px;">
+            <h2 style="color:#888; font-size:14px; text-transform:uppercase; letter-spacing:1px; margin-bottom:15px;">📋 Watchlist Manager</h2>
+            <div style="display:flex; gap:10px; margin-bottom:15px;">
+                <input id="addTickerInput" type="text" placeholder="Add stock... (e.g. TSLA)"
+                    style="flex:1; padding:12px; background:#0a0a0f; border:1px solid #333; border-radius:8px; color:#fff; font-size:14px; outline:none;">
+                <button onclick="addStock()" 
+                    style="padding:12px 20px; background:#00ff88; color:#000; border:none; border-radius:8px; font-weight:bold; cursor:pointer;">
+                    + Add
+                </button>
+            </div>
+            <div style="display:flex; flex-wrap:wrap; gap:8px;">
+                {% for stock in stocks %}
+                <div style="background:#0a0a0f; border:1px solid #333; border-radius:20px; padding:6px 12px; display:flex; align-items:center; gap:8px;">
+                    <span style="font-weight:bold;">{{ stock.ticker }}</span>
+                    <span onclick="removeStock('{{ stock.ticker }}')" 
+                        style="color:#ff4455; cursor:pointer; font-size:16px;">×</span>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
         <button class="run-btn" onclick="runBot()" id="runBtn">▶ Run Bot Now</button>
 
         <div class="search-box" style="margin-bottom: 25px;">
@@ -317,6 +339,30 @@ def dashboard():
                         div.innerHTML = '<p style="color:#ff4455">Error scanning market. Try again.</p>';
                     });
             }
+        function addStock() {
+                const input = document.getElementById('addTickerInput');
+                const ticker = input.value.trim().toUpperCase();
+                if (!ticker) return;
+                fetch('/add_stock', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ticker: ticker})
+                })
+                .then(res => res.json())
+                .then(() => location.reload())
+                .catch(err => alert('Error adding stock'));
+            }
+
+            function removeStock(ticker) {
+                fetch('/remove_stock', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ticker: ticker})
+                })
+                .then(res => res.json())
+                .then(() => location.reload())
+                .catch(err => alert('Error removing stock'));
+            }
         </script>
     </body>
     </html>
@@ -358,6 +404,25 @@ def recommend():
 
     return jsonify({"buys": buys, "sells": sells})
 
+@app.route("/add_stock", methods=["POST"])
+def add_stock():
+    ticker = request.json.get("ticker", "").upper()
+    if not ticker:
+        return jsonify({"error": "No ticker provided"})
+    watchlist = load_watchlist()
+    if ticker not in watchlist:
+        watchlist.append(ticker)
+        save_watchlist(watchlist)
+    return jsonify({"status": "added", "watchlist": watchlist})
+
+@app.route("/remove_stock", methods=["POST"])
+def remove_stock():
+    ticker = request.json.get("ticker", "").upper()
+    watchlist = load_watchlist()
+    if ticker in watchlist:
+        watchlist.remove(ticker)
+        save_watchlist(watchlist)
+    return jsonify({"status": "removed", "watchlist": watchlist})
+
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0")
-    

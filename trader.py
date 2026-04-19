@@ -7,7 +7,19 @@ import os
 from datetime import datetime
 
 PORTFOLIO_FILE = "portfolio.json"
-WATCHLIST = ["SPY", "BRK-B", "AMC", "NVDA", "AAPL"]
+WATCHLIST_FILE = "watchlist.json"
+
+def load_watchlist():
+    if os.path.exists(WATCHLIST_FILE):
+        with open(WATCHLIST_FILE, "r") as f:
+            return json.load(f)
+    return ["SPY", "BRK-B", "AMC", "NVDA", "AAPL"]
+
+def save_watchlist(watchlist):
+    with open(WATCHLIST_FILE, "w") as f:
+        json.dump(watchlist, f)
+
+WATCHLIST = load_watchlist()
 
 def load_portfolio():
     if os.path.exists(PORTFOLIO_FILE):
