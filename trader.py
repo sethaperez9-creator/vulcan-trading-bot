@@ -9,10 +9,14 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-PORTFOLIO_FILE = "portfolio.json"
 WATCHLIST_FILE = "watchlist.json"
 ALERTS_FILE = "alerts.json"
 SETTINGS_FILE = "settings.json"
+REGISTRY_FILE = "registry.json"
+PORTFOLIOS_DIR = "portfolios"
+
+def ensure_dirs():
+    os.makedirs(PORTFOLIOS_DIR, exist_ok=True)
 
 def load_watchlist():
     if os.path.exists(WATCHLIST_FILE):
@@ -24,15 +28,28 @@ def save_watchlist(watchlist):
     with open(WATCHLIST_FILE, "w") as f:
         json.dump(watchlist, f)
 
-def load_portfolio():
-    if os.path.exists(PORTFOLIO_FILE):
-        with open(PORTFOLIO_FILE, "r") as f:
-            return json.load(f)
-    return {"cash": 10000, "positions": {}, "trades": []}
+def get_portfolio_path(username):
+    ensure_dirs()
+    return os.path.join(PORTFOLIOS_DIR, f"{username}.json")
 
-def save_portfolio(portfolio):
-    with open(PORTFOLIO_FILE, "w") as f:
+def load_portfolio(username):
+    path = get_portfolio_path(username)
+    if os.path.exists(path):
+        with open(path, "r") as f:
+            return json.load(f)
+    return {"cash": 10000, "starting_cash": 10000, "positions": {}, "trades": []}
+
+def save_portfolio(username, portfolio):
+    with open(get_portfolio_path(username), "w") as f:
         json.dump(portfolio, f)
+
+def set_starting_cash(username, amount):
+    portfolio = load_portfolio(username)
+    portfolio["cash"] = amount
+    portfolio["starting_cash"] = amount
+    portfolio["positions"] = {}
+    portfolio["trades"] = []
+    save_portfolio(username, portfolio)
 
 def load_alerts():
     if os.path.exists(ALERTS_FILE):
@@ -57,17 +74,8 @@ def send_alert_email(alert, settings):
         msg = MIMEMultipart()
         msg["From"] = settings["gmail_user"]
         msg["To"] = settings["email"]
-        msg["Subject"] = f"⚡ Vulcan Alert — {alert['ticker']} hit ${alert['current_price']}"
-        body = f"""
-Vulcan Price Alert Triggered!
-
-Stock: {alert['ticker']}
-Target: ${alert['target']} ({alert['direction']})
-Current Price: ${alert['current_price']}
-
-— Vulcan Trading Bot
-        """
-        msg.attach(MIMEText(body, "plain"))
+        msg["Subject"] = f"Vulcan Alert — {alert['ticker']} hit ${alert['current_price']}"
+        msg.attach(MIMEText(f"Alert triggered!\n\nStock: {alert['ticker']}\nTarget: ${alert['target']} ({alert['direction']})\nCurrent: ${alert['current_price']}", "plain"))
         server = smtplib.SMTP("smtp.gmail.com", 587)
         server.starttls()
         server.login(settings["gmail_user"], settings["gmail_pass"])
@@ -78,18 +86,12 @@ Current Price: ${alert['current_price']}
 
 def check_alerts():
     alerts = load_alerts()
-    triggered = []
-    remaining = []
+    triggered, remaining = [], []
     for alert in alerts:
-        ticker = alert["ticker"]
-        target = alert["target"]
-        direction = alert["direction"]
         try:
-            price = yf.Ticker(ticker).history(period="1d")["Close"].iloc[-1]
-            price = round(price, 2)
-            if direction == "above" and price >= target:
-                triggered.append({**alert, "current_price": price})
-            elif direction == "below" and price <= target:
+            price = round(yf.Ticker(alert["ticker"]).history(period="1d")["Close"].iloc[-1], 2)
+            if (alert["direction"] == "above" and price >= alert["target"]) or \
+               (alert["direction"] == "below" and price <= alert["target"]):
                 triggered.append({**alert, "current_price": price})
             else:
                 remaining.append(alert)
@@ -98,158 +100,159 @@ def check_alerts():
     save_alerts(remaining)
     return triggered
 
+def load_registry():
+    if os.path.exists(REGISTRY_FILE):
+        with open(REGISTRY_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_registry(registry):
+    with open(REGISTRY_FILE, "w") as f:
+        json.dump(registry, f)
+
+def update_registry(username, ticker, shares, buy_price, action="add"):
+    registry = load_registry()
+    if ticker not in registry:
+        registry[ticker] = {"total_shares": 0, "holders": {}}
+    if action == "add":
+        registry[ticker]["holders"][username] = {"shares": shares, "buy_price": buy_price, "added": datetime.now().isoformat()}
+    elif action == "remove":
+        registry[ticker]["holders"].pop(username, None)
+    registry[ticker]["total_shares"] = sum(v["shares"] for v in registry[ticker]["holders"].values())
+    if not registry[ticker]["holders"]:
+        del registry[ticker]
+    save_registry(registry)
+
+def get_registry_with_flags():
+    registry = load_registry()
+    result = []
+    for ticker, data in registry.items():
+        try:
+            info = yf.Ticker(ticker).info
+            float_shares = info.get("floatShares") or info.get("sharesOutstanding") or 0
+            community_shares = data["total_shares"]
+            holders = len(data["holders"])
+            flag, flag_reason = False, ""
+            if float_shares > 0:
+                pct = (community_shares / float_shares) * 100
+                if pct > 0.01:
+                    flag = True
+                    flag_reason = f"Community holds {pct:.4f}% of float"
+            share_counts = [v["shares"] for v in data["holders"].values()]
+            if len(share_counts) > 2 and len(share_counts) != len(set(share_counts)):
+                flag = True
+                flag_reason = "Duplicate share counts detected"
+            result.append({"ticker": ticker, "community_shares": community_shares, "float_shares": float_shares, "holders": holders, "flagged": flag, "flag_reason": flag_reason})
+        except:
+            result.append({"ticker": ticker, "community_shares": data["total_shares"], "float_shares": 0, "holders": len(data["holders"]), "flagged": False, "flag_reason": ""})
+    return result
+
 def analyze_stock(ticker):
-    stock = yf.Ticker(ticker)
-    history = stock.history(period="2y")
-
-    if history.empty:
-        print(f"{ticker}: No data found, skipping.")
+    try:
+        stock = yf.Ticker(ticker)
+        history = stock.history(period="2y")
+        if history.empty or len(history) < 50:
+            return None
+        history["MA20"] = history["Close"].rolling(window=20).mean()
+        history["MA50"] = history["Close"].rolling(window=50).mean()
+        history["MA200"] = history["Close"].rolling(window=200).mean()
+        delta = history["Close"].diff()
+        gain = delta.where(delta > 0, 0)
+        loss = -delta.where(delta < 0, 0)
+        rs = gain.rolling(window=14).mean() / loss.rolling(window=14).mean()
+        history["RSI"] = 100 - (100 / (1 + rs))
+        ema12 = history["Close"].ewm(span=12).mean()
+        ema26 = history["Close"].ewm(span=26).mean()
+        history["MACD"] = ema12 - ema26
+        history["Signal"] = history["MACD"].ewm(span=9).mean()
+        history["Target"] = (history["Close"].shift(-1) > history["Close"]).astype(int)
+        history.dropna(inplace=True)
+        features = ["Close", "MA20", "MA50", "MA200", "RSI", "MACD", "Signal"]
+        X, y = history[features], history["Target"]
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        model = RandomForestClassifier(n_estimators=100, random_state=42)
+        model.fit(X_train, y_train)
+        latest = pd.DataFrame([history[features].iloc[-1]], columns=features)
+        prediction = model.predict(latest)[0]
+        proba = float(model.predict_proba(latest)[0][1])
+        rsi = round(history["RSI"].iloc[-1], 2)
+        ma20 = round(history["MA20"].iloc[-1], 2)
+        ma50 = round(history["MA50"].iloc[-1], 2)
+        ma200 = round(history["MA200"].iloc[-1], 2)
+        macd = round(history["MACD"].iloc[-1], 4)
+        signal_line = round(history["Signal"].iloc[-1], 4)
+        ma_gap = abs(ma50 - ma200) / ma200 * 100
+        score = 0
+        if proba > 0.65: score += 2
+        elif proba > 0.55: score += 1
+        if rsi < 35: score += 2
+        elif rsi < 45: score += 1
+        if ma50 > ma200: score += 1
+        if macd > signal_line: score += 1
+        if ma_gap > 3: score += 1
+        confidence = "High" if score >= 5 else "Medium" if score >= 3 else "Low"
+        prev_close = round(history["Close"].iloc[-2], 2)
+        current_price = round(history["Close"].iloc[-1], 2)
+        change_pct = round(((current_price - prev_close) / prev_close) * 100, 2)
+        return {
+            "ticker": ticker, "price": current_price, "prev_close": prev_close, "change_pct": change_pct,
+            "rsi": rsi, "ma20": ma20, "ma50": ma50, "ma200": ma200, "macd": macd, "signal_line": signal_line,
+            "prediction": int(prediction), "proba": round(proba, 3), "confidence": confidence
+        }
+    except Exception as e:
+        print(f"Error analyzing {ticker}: {e}")
         return None
-
-    history["MA50"] = history["Close"].rolling(window=50).mean()
-    history["MA200"] = history["Close"].rolling(window=200).mean()
-
-    delta = history["Close"].diff()
-    gain = delta.where(delta > 0, 0)
-    loss = -delta.where(delta < 0, 0)
-    avg_gain = gain.rolling(window=14).mean()
-    avg_loss = loss.rolling(window=14).mean()
-    rs = avg_gain / avg_loss
-    history["RSI"] = 100 - (100 / (1 + rs))
-    history["Target"] = (history["Close"].shift(-1) > history["Close"]).astype(int)
-    history.dropna(inplace=True)
-
-    if len(history) < 50:
-        print(f"{ticker}: Not enough data, skipping.")
-        return None
-
-    features = ["Close", "MA50", "MA200", "RSI"]
-    X = history[features]
-    y = history["Target"]
-
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    model = RandomForestClassifier(n_estimators=100, random_state=42)
-    model.fit(X_train, y_train)
-
-    latest_row = history[features].iloc[-1]
-    latest = pd.DataFrame([latest_row], columns=features)
-    prediction = model.predict(latest)[0]
-
-    rsi = round(history["RSI"].iloc[-1], 2)
-    ma50 = round(history["MA50"].iloc[-1], 2)
-    ma200 = round(history["MA200"].iloc[-1], 2)
-
-    rsi_strength = rsi > 80 or rsi < 20
-    rsi_moderate = (70 < rsi <= 80) or (20 <= rsi < 30)
-    ma_gap = abs(ma50 - ma200) / ma200 * 100
-
-    if rsi_strength and ma_gap > 5:
-        confidence = "High"
-    elif rsi_moderate or ma_gap > 2:
-        confidence = "Medium"
-    else:
-        confidence = "Low"
-
-    return {
-        "ticker": ticker,
-        "price": round(history["Close"].iloc[-1], 2),
-        "rsi": rsi,
-        "ma50": ma50,
-        "ma200": ma200,
-        "prediction": int(prediction),
-        "confidence": confidence
-    }
 
 def get_chart_data(ticker):
+    import math
     stock = yf.Ticker(ticker)
     history = stock.history(period="1y")
+    history["MA20"] = history["Close"].rolling(window=20).mean()
     history["MA50"] = history["Close"].rolling(window=50).mean()
     history["MA200"] = history["Close"].rolling(window=200).mean()
+    history = history.dropna(subset=["MA20"]).tail(126)
 
-    # Only drop rows where MA50 is NaN, keep last 6 months
-    history = history.dropna(subset=["MA50"])
-    history = history.tail(126)  # ~6 months of trading days
+    def safe(val):
+        try:
+            v = float(val)
+            return None if math.isnan(v) else round(v, 2)
+        except: return None
 
-    dates = [str(d.date()) for d in history.index]
-    closes = history["Close"].round(2).tolist()
-    ma50 = history["MA50"].round(2).tolist()
-    ma200 = [round(x, 2) if str(x) != 'nan' else None for x in history["MA200"].tolist()]
+    candles = [{"time": str(ts.date()), "open": safe(row["Open"]), "high": safe(row["High"]),
+                "low": safe(row["Low"]), "close": safe(row["Close"]), "volume": int(row["Volume"])}
+               for ts, row in history.iterrows()]
+    ma20 = [{"time": str(ts.date()), "value": safe(row["MA20"])} for ts, row in history.iterrows() if safe(row["MA20"])]
+    ma50 = [{"time": str(ts.date()), "value": safe(row["MA50"])} for ts, row in history.iterrows() if safe(row["MA50"])]
+    ma200 = [{"time": str(ts.date()), "value": safe(row["MA200"])} for ts, row in history.iterrows() if safe(row["MA200"])]
+    volumes = [{"time": str(ts.date()), "value": int(row["Volume"]),
+                "color": "rgba(99,102,241,0.5)" if row["Close"] >= row["Open"] else "rgba(139,92,246,0.35)"}
+               for ts, row in history.iterrows()]
+    return {"candles": candles, "ma20": ma20, "ma50": ma50, "ma200": ma200, "volumes": volumes}
 
-    return {"dates": dates, "closes": closes, "ma50": ma50, "ma200": ma200}
-    stock = yf.Ticker(ticker)
-    history = stock.history(period="6mo")
-    history["MA50"] = history["Close"].rolling(window=50).mean()
-    history["MA200"] = history["Close"].rolling(window=200).mean()
-    history.dropna(inplace=True)
-
-    dates = [str(d.date()) for d in history.index]
-    closes = history["Close"].round(2).tolist()
-    ma50 = history["MA50"].round(2).tolist()
-    ma200 = history["MA200"].round(2).tolist()
-
-    return {"dates": dates, "closes": closes, "ma50": ma50, "ma200": ma200}
-
-def run_bot():
-    portfolio = load_portfolio()
-    date = datetime.now().strftime("%Y-%m-%d")
-    WATCHLIST = load_watchlist()
-
-    print(f"\n{'='*50}")
-    print(f"Running bot — {date}")
-    print(f"Cash: ${portfolio['cash']:.2f}")
-    print(f"{'='*50}")
-
-    for ticker in WATCHLIST:
-        print(f"\nAnalyzing {ticker}...")
+def run_bot(username):
+    portfolio = load_portfolio(username)
+    watchlist = load_watchlist()
+    date = datetime.now().strftime("%Y-%m-%d %H:%M")
+    for ticker in watchlist:
         data = analyze_stock(ticker)
-
-        if data is None:
-            continue
-
-        price = data["price"]
-        prediction = data["prediction"]
+        if data is None: continue
+        price, prediction, proba, confidence = data["price"], data["prediction"], data["proba"], data["confidence"]
         position = portfolio["positions"].get(ticker, {"shares": 0, "buy_price": 0})
-
-        print(f"Price: ${price} | RSI: {data['rsi']} | Prediction: {'UP 📈' if prediction == 1 else 'DOWN 📉'} | Confidence: {data['confidence']}")
-
-        if prediction == 1 and position["shares"] == 0 and portfolio["cash"] > price:
-            allocation = portfolio["cash"] * 0.2
-            shares = int(allocation / price)
+        should_buy = prediction == 1 and proba > 0.52 and position["shares"] == 0 and portfolio["cash"] > price * 5
+        should_sell = position["shares"] > 0 and (prediction == 0 or data["rsi"] > 75 or proba < 0.45)
+        if should_buy:
+            alloc_pct = 0.30 if confidence == "High" else 0.20 if confidence == "Medium" else 0.12
+            shares = int(portfolio["cash"] * alloc_pct / price)
             if shares > 0:
-                cost = shares * price
-                portfolio["cash"] -= cost
+                cost = round(shares * price, 2)
+                portfolio["cash"] = round(portfolio["cash"] - cost, 2)
                 portfolio["positions"][ticker] = {"shares": shares, "buy_price": price}
-                trade = f"BUY {ticker} {date} | Price: ${price} | Shares: {shares} | Cost: ${cost:.2f}"
-                portfolio["trades"].append(trade)
-                print(f"Action: {trade}")
-
-        elif prediction == 0 and position["shares"] > 0:
-            revenue = position["shares"] * price
-            profit = (price - position["buy_price"]) * position["shares"]
-            portfolio["cash"] += revenue
+                portfolio["trades"].append({"action": "BUY", "ticker": ticker, "date": date, "price": price, "shares": shares, "total": cost, "confidence": confidence, "proba": proba})
+        elif should_sell:
+            revenue = round(position["shares"] * price, 2)
+            profit = round((price - position["buy_price"]) * position["shares"], 2)
+            portfolio["cash"] = round(portfolio["cash"] + revenue, 2)
             portfolio["positions"][ticker] = {"shares": 0, "buy_price": 0}
-            trade = f"SELL {ticker} {date} | Price: ${price} | Profit: ${profit:.2f}"
-            portfolio["trades"].append(trade)
-            print(f"Action: {trade}")
-
-        else:
-            print(f"Action: HOLD")
-
-    total = portfolio["cash"]
-    for ticker, pos in portfolio["positions"].items():
-        if pos["shares"] > 0:
-            data = analyze_stock(ticker)
-            if data:
-                total += pos["shares"] * data["price"]
-
-    print(f"\n{'='*50}")
-    print(f"Portfolio Value: ${total:.2f}")
-    print(f"Return: {((total - 10000) / 10000) * 100:.2f}%")
-    print(f"{'='*50}")
-
-    save_portfolio(portfolio)
-    print("\nPortfolio saved.")
-
-if __name__ == "__main__":
-    run_bot()
-    
+            portfolio["trades"].append({"action": "SELL", "ticker": ticker, "date": date, "price": price, "shares": position["shares"], "total": revenue, "profit": profit, "proba": proba})
+    save_portfolio(username, portfolio)
+    return portfolio
