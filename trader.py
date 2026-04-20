@@ -162,6 +162,21 @@ def analyze_stock(ticker):
 
 def get_chart_data(ticker):
     stock = yf.Ticker(ticker)
+    history = stock.history(period="1y")
+    history["MA50"] = history["Close"].rolling(window=50).mean()
+    history["MA200"] = history["Close"].rolling(window=200).mean()
+
+    # Only drop rows where MA50 is NaN, keep last 6 months
+    history = history.dropna(subset=["MA50"])
+    history = history.tail(126)  # ~6 months of trading days
+
+    dates = [str(d.date()) for d in history.index]
+    closes = history["Close"].round(2).tolist()
+    ma50 = history["MA50"].round(2).tolist()
+    ma200 = [round(x, 2) if str(x) != 'nan' else None for x in history["MA200"].tolist()]
+
+    return {"dates": dates, "closes": closes, "ma50": ma50, "ma200": ma200}
+    stock = yf.Ticker(ticker)
     history = stock.history(period="6mo")
     history["MA50"] = history["Close"].rolling(window=50).mean()
     history["MA200"] = history["Close"].rolling(window=200).mean()
@@ -237,3 +252,4 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+    
