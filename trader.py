@@ -102,6 +102,70 @@ def analyze_stock(ticker):
     stock = yf.Ticker(ticker)
     history = stock.history(period="2y")
 
+    if len(history) < 201: # Need 200 for the MA200
+        print(f"{ticker}: Not enough data for MA200, skipping.")
+        return None
+
+    history["MA50"] = history["Close"].rolling(window=50).mean()
+    history["MA200"] = history["Close"].rolling(window=200).mean()
+
+    # RSI Calculation
+    delta = history["Close"].diff()
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    avg_gain = gain.rolling(window=14).mean()
+    avg_loss = loss.rolling(window=14).mean()
+    rs = avg_gain / (avg_loss + 1e-9) # Avoid division by zero
+    history["RSI"] = 100 - (100 / (1 + rs))
+    
+    history["Target"] = (history["Close"].shift(-1) > history["Close"]).astype(int)
+    history.dropna(inplace=True)
+
+    features = ["Close", "MA50", "MA200", "RSI"]
+    X = history[features]
+    y = history["Target"]
+
+    # Simple Train/Test
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
+    model = RandomForestClassifier(n_estimators=100, random_state=42)
+    model.fit(X_train, y_train)
+
+    latest_row = X.iloc[[-1]] # Keeps as DataFrame with feature names
+    prediction = model.predict(latest_row)[0]
+    
+    # NEW: Get the probability of the prediction
+    prob = model.predict_proba(latest_row)[0] 
+    conf_score = prob[1] if prediction == 1 else prob[0]
+
+    rsi = round(history["RSI"].iloc[-1], 2)
+    ma50 = history["MA50"].iloc[-1]
+    ma200 = history["MA200"].iloc[-1]
+
+    # Adjusted Confidence Logic (More realistic)
+    # High: Strong Trend + Oversold/Overbought OR High ML Certainty
+    rsi_signal = rsi < 35 or rsi > 65
+    ml_certainty = conf_score > 0.60 
+
+    if rsi_signal and ml_certainty:
+        confidence = "High"
+    elif rsi_signal or ml_certainty:
+        confidence = "Medium"
+    else:
+        confidence = "Low"
+
+    return {
+        "ticker": ticker,
+        "price": round(history["Close"].iloc[-1], 2),
+        "rsi": rsi,
+        "ma50": round(ma50, 2),
+        "ma200": round(ma200, 2),
+        "prediction": int(prediction),
+        "confidence": confidence,
+        "prob": round(conf_score, 4)
+    }
+    stock = yf.Ticker(ticker)
+    history = stock.history(period="2y")
+
     if history.empty:
         print(f"{ticker}: No data found, skipping.")
         return None
@@ -189,7 +253,7 @@ def get_chart_data(ticker):
 
     return {"dates": dates, "closes": closes, "ma50": ma50, "ma200": ma200}
 
-def run_bot():
+
     portfolio = load_portfolio()
     date = datetime.now().strftime("%Y-%m-%d")
     WATCHLIST = load_watchlist()
@@ -250,6 +314,60 @@ def run_bot():
     save_portfolio(portfolio)
     print("\nPortfolio saved.")
 
+def run_bot():
+    portfolio = load_portfolio()
+    date = datetime.now().strftime("%Y-%m-%d")
+    WATCHLIST = load_watchlist()
+
+    print(f"\n⚡ VULCAN ENGINE STARTING — {date}")
+    print(f"Current Buying Power: ${portfolio['cash']:.2f}\n" + "="*50)
+
+    for ticker in WATCHLIST:
+        data = analyze_stock(ticker)
+        if not data: continue
+
+        price = data["price"]
+        pred = data["prediction"]
+        conf = data["confidence"]
+        pos = portfolio["positions"].get(ticker, {"shares": 0, "buy_price": 0})
+
+        print(f"[{ticker}] Price: ${price} | Prediction: {'UP' if pred == 1 else 'DOWN'} ({data['prob']}) | Conf: {conf}")
+
+        # BUY LOGIC with Debugging
+        if pred == 1:
+            if pos["shares"] > 0:
+                print(f" -> HOLD: Already own {pos['shares']} shares.")
+            elif portfolio["cash"] < price:
+                print(f" -> SKIP: Not enough cash for 1 share.")
+            elif conf == "Low":
+                print(f" -> SKIP: Confidence too low for entry.")
+            else:
+                # Allocation: Use 20% of available cash
+                allocation = portfolio["cash"] * 0.2
+                shares = int(allocation / price)
+                if shares > 0:
+                    cost = shares * price
+                    portfolio["cash"] -= cost
+                    portfolio["positions"][ticker] = {"shares": shares, "buy_price": price}
+                    trade_str = f"BUY {ticker} | {shares} shares @ ${price}"
+                    portfolio["trades"].append(f"{date}: {trade_str}")
+                    print(f" *** ACTION: {trade_str} ***")
+        
+        # SELL LOGIC
+        elif pred == 0 and pos["shares"] > 0:
+            revenue = pos["shares"] * price
+            profit = (price - pos["buy_price"]) * pos["shares"]
+            portfolio["cash"] += revenue
+            portfolio["positions"][ticker] = {"shares": 0, "buy_price": 0}
+            trade_str = f"SELL {ticker} | Profit: ${profit:.2f}"
+            portfolio["trades"].append(f"{date}: {trade_str}")
+            print(f" *** ACTION: {trade_str} ***")
+            
+        else:
+            print(" -> NO ACTION: Waiting for setup.")
+
+    save_portfolio(portfolio)
+    print("="*50 + "\nCycle Complete. Portfolio Saved.")
+
 if __name__ == "__main__":
     run_bot()
-    
