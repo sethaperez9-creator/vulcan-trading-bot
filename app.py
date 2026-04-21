@@ -1014,10 +1014,8 @@ def registry_resend_verif():
     email = users.get(u,{}).get("email","")
     if not email: return jsonify({"message":"No email on file."})
     base = request.host_url.rstrip("/")
-    send_verification_email(u, email, base)
-    return jsonify({"message":f"Verification email sent to {email}."})
     sent = send_verification_email(u, email, base)
-return jsonify({"message": f"Verification email sent to {email}.", "sent": sent})
+    return jsonify({"message": f"Verification email sent to {email}.", "sent": sent})
 
 @app.route("/run")
 def run():
