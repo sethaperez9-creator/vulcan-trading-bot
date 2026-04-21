@@ -16,6 +16,7 @@ def _load_env():
             k,v=line.split("=",1)
             os.environ.setdefault(k.strip(),v.strip())
 _load_env()
+print(f"[vulcan] HCAPTCHA_SITE_KEY loaded: {bool(os.environ.get('HCAPTCHA_SITE_KEY'))}")
 
 from registry import (
     verify_captcha,send_verification_email,confirm_verification,
@@ -343,7 +344,7 @@ LOGIN_PAGE = """<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Vulcan — Sign In</title>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<script src="https://js.hcaptcha.com/1/api.js" async defer></script>
+<script src="https://js.hcaptcha.com/1/api.js"></script>
 <style>
 {CSS}
 body{background:var(--bg);display:flex;align-items:center;justify-content:center;min-height:100vh;position:relative;overflow:hidden;}
@@ -398,7 +399,7 @@ body{background:var(--bg);display:flex;align-items:center;justify-content:center
       <div class="fg"><label class="fl">Email Address</label><input type="email" id="re" class="inp" placeholder="your@email.com" autocomplete="email" required></div>
       <div class="fg"><label class="fl">Password</label><input type="password" id="rp" class="inp" placeholder="min. 6 characters" autocomplete="new-password" required></div>
       <div class="fg"><label class="fl">Confirm Password</label><input type="password" id="rc" class="inp" placeholder="repeat password" autocomplete="new-password" required></div>
-      <div class="h-captcha" data-sitekey="{HCAPTCHA_SITE_KEY}" style="margin-bottom:12px;transform:scale(0.9);transform-origin:left;"></div>
+      <div id="hcaptcha-widget" style="margin-bottom:12px;"></div>
       <button type="submit" class="lbtn" id="rbtn">Create Account →</button>
     </form>
     <div style="text-align:center;margin-top:18px;font-size:11px;color:var(--text3);line-height:1.7;">Paper trading · ML signals · Community registry</div>
@@ -411,12 +412,23 @@ function switchTab(t){
     document.getElementById(x==='login'?'loginForm':'regForm').style.display=x===t?'block':'none';
   });
   clrMsg();
+  if(t==='register'){setTimeout(renderCaptcha,100);}
 }
 function showErr(m){var e=document.getElementById('errBox');e.textContent='⚠ '+m;e.className='err show';document.getElementById('okBox').className='ok2';}
 function showOk(m){var e=document.getElementById('okBox');e.textContent='✓ '+m;e.className='ok2 show';document.getElementById('errBox').className='err';}
 function clrMsg(){document.getElementById('errBox').className='err';document.getElementById('okBox').className='ok2';}
 // Show verified banner if redirected from email link
 if(window.location.search.includes('verified=1')){showOk('Email verified! You can now sign in.');}
+
+// Render hCaptcha widget explicitly when register tab is shown
+var _captchaRendered=false;
+function renderCaptcha(){
+  if(_captchaRendered) return;
+  try{
+    hcaptcha.render('hcaptcha-widget',{sitekey:'{HCAPTCHA_SITE_KEY}'});
+    _captchaRendered=true;
+  }catch(e){console.log('hCaptcha render error:',e);}
+}
 
 async function doLogin(e){
   e.preventDefault();
@@ -433,8 +445,9 @@ async function doReg(e){
   clrMsg();
   if(p!==c){showErr("Passwords don't match.");return;}
   if(p.length<6){showErr("Password must be at least 6 characters.");return;}
-  var captcha=hcaptcha.getResponse();
-  if(!captcha){showErr("Please complete the CAPTCHA.");return;}
+  var captcha='';
+  try{captcha=hcaptcha.getResponse();}catch(e){}
+  if(!captcha){showErr("Please complete the CAPTCHA first.");return;}
   var btn=document.getElementById('rbtn');btn.disabled=true;btn.textContent='Creating...';
   var r=await fetch('/auth/register',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({
