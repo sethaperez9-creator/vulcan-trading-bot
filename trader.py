@@ -268,49 +268,109 @@ def get_chart_data(ticker, period="6mo"):
              for ts,r in h.iterrows()]
     return {"candles":candles,"ma20":ma20,"ma50":ma50,"ma200":ma200,"volumes":vols}
 
-# ── Bot — aggressive autonomous trading ───────────────────────────────────────
+# ── Bot — autonomous trading ──────────────────────────────────────────────────
 STRATEGIES = {
-    "aggressive": {"buy_proba":0.50,"sell_proba":0.42,"rsi_sell":78,"alloc":{"High":0.35,"Medium":0.25,"Low":0.15}},
-    "balanced":   {"buy_proba":0.55,"sell_proba":0.45,"rsi_sell":75,"alloc":{"High":0.28,"Medium":0.18,"Low":0.10}},
-    "conservative":{"buy_proba":0.62,"sell_proba":0.48,"rsi_sell":72,"alloc":{"High":0.20,"Medium":0.12,"Low":0.07}},
+    "aggressive":  {"alloc":{"High":0.30,"Medium":0.22,"Low":0.15},"max_pos":6,"rsi_sell":80},
+    "balanced":    {"alloc":{"High":0.22,"Medium":0.16,"Low":0.10},"max_pos":5,"rsi_sell":75},
+    "conservative":{"alloc":{"High":0.15,"Medium":0.10,"Low":0.06},"max_pos":4,"rsi_sell":70},
 }
+
+# Extended scan list — bot always scans these regardless of watchlist
+BOT_SCAN = [
+    "AAPL","MSFT","NVDA","TSLA","AMZN","GOOGL","META","AMD","NFLX",
+    "SPY","QQQ","JPM","BAC","DIS","UBER","SHOP","PYPL","INTC","MU",
+]
 
 def run_bot(username, strategy="balanced"):
     cfg       = STRATEGIES.get(strategy, STRATEGIES["balanced"])
     portfolio = load_portfolio(username)
-    watchlist = load_watchlist()
     date      = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    for ticker in watchlist:
+    # Merge watchlist + built-in scan list, deduplicated
+    watchlist = load_watchlist()
+    scan = list(dict.fromkeys(watchlist + BOT_SCAN))  # watchlist first, no dupes
+
+    open_positions = sum(1 for p in portfolio["positions"].values() if p.get("shares", 0) > 0)
+
+    for ticker in scan:
         data = analyze_stock(ticker)
-        if not data: continue
+        if not data:
+            continue
 
-        price, proba, confidence = data["price"], data["proba"], data["confidence"]
-        rsi      = data["rsi"]
-        position = portfolio["positions"].get(ticker, {"shares":0,"buy_price":0})
+        price      = data["price"]
+        proba      = data["proba"]
+        prediction = data["prediction"]
+        rsi        = data["rsi"]
+        macd       = data["macd"]
+        sig        = data["signal_line"]
+        confidence = data["confidence"]
+        position   = portfolio["positions"].get(ticker, {"shares": 0, "buy_price": 0})
+        has_pos    = position.get("shares", 0) > 0
 
-        buy = (data["prediction"]==1 and proba>cfg["buy_proba"]
-               and position["shares"]==0 and portfolio["cash"] > price*3)
-        sell = (position["shares"]>0 and
-                (data["prediction"]==0 or rsi>cfg["rsi_sell"] or proba<cfg["sell_proba"]))
+        # ── SELL logic ────────────────────────────────────────────────────────
+        if has_pos:
+            buy_price = position["buy_price"]
+            pnl_pct   = ((price - buy_price) / buy_price) * 100
+            # Sell if: prediction flipped down, OR RSI overbought, OR stop-loss -8%, OR take-profit +15%
+            should_sell = (
+                prediction == 0
+                or rsi > cfg["rsi_sell"]
+                or pnl_pct <= -8.0
+                or pnl_pct >= 15.0
+            )
+            if should_sell:
+                rev    = round(position["shares"] * price, 2)
+                profit = round((price - buy_price) * position["shares"], 2)
+                portfolio["cash"] = round(portfolio["cash"] + rev, 2)
+                portfolio["positions"][ticker] = {"shares": 0, "buy_price": 0}
+                open_positions -= 1
+                portfolio["trades"].append({
+                    "action": "SELL", "ticker": ticker, "date": date,
+                    "price": price, "shares": position["shares"],
+                    "total": rev, "profit": profit,
+                    "reason": "stop-loss" if pnl_pct<=-8 else "take-profit" if pnl_pct>=15 else "signal",
+                    "proba": proba
+                })
+            continue  # don't try to buy something we already hold
 
-        if buy:
-            alloc  = portfolio["cash"] * cfg["alloc"].get(confidence, 0.15)
-            shares = int(alloc / price)
-            if shares > 0:
-                cost = round(shares*price, 2)
-                portfolio["cash"] = round(portfolio["cash"]-cost, 2)
-                portfolio["positions"][ticker] = {"shares":shares,"buy_price":price}
-                portfolio["trades"].append({"action":"BUY","ticker":ticker,"date":date,
-                    "price":price,"shares":shares,"total":cost,"confidence":confidence,"proba":proba})
+        # ── BUY logic ─────────────────────────────────────────────────────────
+        if open_positions >= cfg["max_pos"]:
+            continue  # portfolio full
 
-        elif sell:
-            rev    = round(position["shares"]*price, 2)
-            profit = round((price-position["buy_price"])*position["shares"], 2)
-            portfolio["cash"] = round(portfolio["cash"]+rev, 2)
-            portfolio["positions"][ticker] = {"shares":0,"buy_price":0}
-            portfolio["trades"].append({"action":"SELL","ticker":ticker,"date":date,
-                "price":price,"shares":position["shares"],"total":rev,"profit":profit,"proba":proba})
+        if portfolio["cash"] < price:
+            continue  # can't afford even 1 share
+
+        # Buy signal: prediction==1 AND any supporting indicator
+        # Deliberately loose — at least ONE indicator must agree
+        signal_count = sum([
+            prediction == 1,
+            proba > 0.50,          # model leans up
+            rsi < 55,              # not overbought
+            macd > sig,            # MACD bullish crossover
+            data["ma20"] > data["ma50"] or data["ma50"] > data["ma200"],  # trend up
+        ])
+
+        should_buy = signal_count >= 2  # just 2 of 5 signals needed
+
+        if should_buy:
+            alloc_pct = cfg["alloc"].get(confidence, 0.10)
+            alloc     = portfolio["cash"] * alloc_pct
+            shares    = max(1, int(alloc / price))  # buy at least 1 share
+            # Cap so we never spend more than we have
+            if shares * price > portfolio["cash"]:
+                shares = int(portfolio["cash"] / price)
+            if shares < 1:
+                continue
+
+            cost = round(shares * price, 2)
+            portfolio["cash"] = round(portfolio["cash"] - cost, 2)
+            portfolio["positions"][ticker] = {"shares": shares, "buy_price": price}
+            open_positions += 1
+            portfolio["trades"].append({
+                "action": "BUY", "ticker": ticker, "date": date,
+                "price": price, "shares": shares, "total": cost,
+                "confidence": confidence, "proba": proba, "signals": signal_count
+            })
 
     save_portfolio(username, portfolio)
     return portfolio
