@@ -4,8 +4,26 @@ import json,os,hashlib,secrets
 from datetime import datetime
 from trader import (analyze_stock,run_bot,get_chart_data,load_watchlist,save_watchlist,
     load_alerts,save_alerts,check_alerts,send_alert_email,load_settings,save_settings,
-    load_portfolio,save_portfolio,set_starting_cash,
-    load_registry,get_registry_with_flags,update_registry,ensure_dirs,STRATEGIES)
+    load_portfolio,save_portfolio,set_starting_cash,ensure_dirs,STRATEGIES)
+
+def _load_env():
+    env_path=os.path.join(os.path.dirname(os.path.abspath(__file__)),".env")
+    if not os.path.exists(env_path): return
+    with open(env_path) as f:
+        for line in f:
+            line=line.strip()
+            if not line or line.startswith("#") or "=" not in line: continue
+            k,v=line.split("=",1)
+            os.environ.setdefault(k.strip(),v.strip())
+_load_env()
+
+from registry import (
+    verify_captcha,send_verification_email,confirm_verification,
+    is_email_verified,get_verified_email,email_already_registered,
+    create_link_token,exchange_public_token,refresh_holdings,
+    get_user_linked_accounts,get_user_snapshots,get_registry_with_flags,
+)
+HCAPTCHA_SITE_KEY=os.environ.get("HCAPTCHA_SITE_KEY","")
 
 app=Flask(__name__)
 app.secret_key=secrets.token_hex(32)
@@ -325,6 +343,7 @@ LOGIN_PAGE = """<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Vulcan — Sign In</title>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://js.hcaptcha.com/1/api.js" async defer></script>
 <style>
 {CSS}
 body{background:var(--bg);display:flex;align-items:center;justify-content:center;min-height:100vh;position:relative;overflow:hidden;}
@@ -376,8 +395,10 @@ body{background:var(--bg);display:flex;align-items:center;justify-content:center
     </form>
     <form id="regForm" onsubmit="doReg(event)" autocomplete="on" style="display:none;">
       <div class="fg"><label class="fl">Username</label><input type="text" id="ru" class="inp" placeholder="choose_a_username" autocomplete="username" required></div>
+      <div class="fg"><label class="fl">Email Address</label><input type="email" id="re" class="inp" placeholder="your@email.com" autocomplete="email" required></div>
       <div class="fg"><label class="fl">Password</label><input type="password" id="rp" class="inp" placeholder="min. 6 characters" autocomplete="new-password" required></div>
       <div class="fg"><label class="fl">Confirm Password</label><input type="password" id="rc" class="inp" placeholder="repeat password" autocomplete="new-password" required></div>
+      <div class="h-captcha" data-sitekey="{HCAPTCHA_SITE_KEY}" style="margin-bottom:12px;transform:scale(0.9);transform-origin:left;"></div>
       <button type="submit" class="lbtn" id="rbtn">Create Account →</button>
     </form>
     <div style="text-align:center;margin-top:18px;font-size:11px;color:var(--text3);line-height:1.7;">Paper trading · ML signals · Community registry</div>
@@ -394,6 +415,9 @@ function switchTab(t){
 function showErr(m){var e=document.getElementById('errBox');e.textContent='⚠ '+m;e.className='err show';document.getElementById('okBox').className='ok2';}
 function showOk(m){var e=document.getElementById('okBox');e.textContent='✓ '+m;e.className='ok2 show';document.getElementById('errBox').className='err';}
 function clrMsg(){document.getElementById('errBox').className='err';document.getElementById('okBox').className='ok2';}
+// Show verified banner if redirected from email link
+if(window.location.search.includes('verified=1')){showOk('Email verified! You can now sign in.');}
+
 async function doLogin(e){
   e.preventDefault();
   var btn=document.getElementById('lbtn');btn.disabled=true;btn.textContent='Authenticating...';clrMsg();
@@ -409,12 +433,19 @@ async function doReg(e){
   clrMsg();
   if(p!==c){showErr("Passwords don't match.");return;}
   if(p.length<6){showErr("Password must be at least 6 characters.");return;}
+  var captcha=hcaptcha.getResponse();
+  if(!captcha){showErr("Please complete the CAPTCHA.");return;}
   var btn=document.getElementById('rbtn');btn.disabled=true;btn.textContent='Creating...';
   var r=await fetch('/auth/register',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({username:document.getElementById('ru').value.trim(),password:p})});
+    body:JSON.stringify({
+      username:document.getElementById('ru').value.trim(),
+      email:document.getElementById('re').value.trim(),
+      password:p,
+      captcha_token:captcha
+    })});
   var d=await r.json();
-  if(d.success){showOk('Account created! Sign in now.');setTimeout(()=>switchTab('login'),1500);}
-  else showErr(d.error);
+  if(d.success){showOk(d.message||'Account created! Check your email.');hcaptcha.reset();}
+  else{showErr(d.error);hcaptcha.reset();}
   btn.disabled=false;btn.textContent='Create Account →';
 }
 </script></body></html>"""
@@ -423,7 +454,7 @@ async function doReg(e){
 @app.route("/login")
 def login():
     if logged_in(): return redirect(url_for("home"))
-    return LOGIN_PAGE.replace("{CSS}", CSS)
+    return LOGIN_PAGE.replace("{CSS}", CSS).replace("{HCAPTCHA_SITE_KEY}", HCAPTCHA_SITE_KEY)
 
 @app.route("/logout")
 def logout():
@@ -446,13 +477,36 @@ def auth_register():
     data=request.json
     u=data.get("username","").strip().lower()
     p=data.get("password","")
-    if not u or not p: return jsonify({"success":False,"error":"All fields required."})
+    email=data.get("email","").strip().lower()
+    captcha=data.get("captcha_token","")
+    if not u or not p or not email: return jsonify({"success":False,"error":"All fields required."})
     if len(u)<3: return jsonify({"success":False,"error":"Username: min 3 characters."})
     if not u.replace("_","").replace("-","").isalnum(): return jsonify({"success":False,"error":"Letters, numbers, - and _ only."})
+    if "@" not in email or "." not in email: return jsonify({"success":False,"error":"Enter a valid email address."})
+    if not verify_captcha(captcha): return jsonify({"success":False,"error":"CAPTCHA verification failed. Please try again."})
+    if email_already_registered(email): return jsonify({"success":False,"error":"An account with that email already exists."})
     users=load_users()
     if u in users: return jsonify({"success":False,"error":"Username already taken."})
-    users[u]={"password":hash_pw(p),"created":datetime.now().isoformat()}
-    save_users(users); return jsonify({"success":True})
+    users[u]={"password":hash_pw(p),"email":email,"created":datetime.now().isoformat(),"verified":False}
+    save_users(users)
+    base=request.host_url.rstrip("/")
+    sent=send_verification_email(u,email,base)
+    if sent:
+        return jsonify({"success":True,"message":f"Account created! Check {email} for a verification link."})
+    else:
+        return jsonify({"success":True,"message":"Account created! (Email delivery failed — contact admin.)"})
+
+@app.route("/verify-email")
+def verify_email():
+    token=request.args.get("token","")
+    user=request.args.get("user","")
+    if confirm_verification(user,token):
+        users=load_users()
+        if user in users:
+            users[user]["verified"]=True
+            save_users(users)
+        return redirect(url_for("login")+"?verified=1")
+    return "<h2 style='font-family:sans-serif;color:#f43f5e;padding:40px;'>Invalid or expired link. Please register again.</h2>", 400
 
 @app.route("/")
 def home():
@@ -682,70 +736,175 @@ function setStrat(s){{_strat=s;document.getElementById('stratModal').classList.r
 @app.route("/registry")
 def registry():
     if not logged_in(): return redirect(url_for("login"))
-    reg_data=get_registry_with_flags()
-    holdings=load_holdings()
-    flagged=sum(1 for r in reg_data if r["flagged"])
-    total_h=sum(r["holders"] for r in reg_data)
-    reg_rows=""
-    for r in reg_data:
-        fs=f"{r['float_shares']:,}" if r["float_shares"] else "N/A"
-        fh=f'<span class="bdg bwarn">⚠ {r["flag_reason"]}</span>' if r["flagged"] else '<span class="bdg" style="background:rgba(52,211,153,.1);color:var(--vir-l);border-color:rgba(52,211,153,.2);">✓ Clean</span>'
-        reg_rows+=f"<tr><td style='color:var(--text);font-weight:700;'>{r['ticker']}</td><td>{r['community_shares']:,}</td><td style='color:var(--text3);'>{fs}</td><td>{r['holders']}</td><td>{fh}</td></tr>"
-    if not reg_rows: reg_rows="<tr><td colspan='5' style='color:var(--text3);text-align:center;padding:36px;'>No holdings registered yet. Add yours below to get started.</td></tr>"
-    hr=""
-    for i,h in enumerate(holdings):
-        hr+=f"<tr><td style='color:var(--text);font-weight:700;'>{h['ticker']}</td><td>{h['shares']}</td><td>${h['buy_price']}</td><td><button class='btn bd' style='padding:3px 9px;font-size:11px;' onclick='rmH({i})'>Remove</button></td></tr>"
-    if not hr: hr="<tr><td colspan='4' style='color:var(--text3);text-align:center;padding:18px;'>No holdings added yet.</td></tr>"
-    market=get_market_bar()
+    username    = me()
+    reg_data    = get_registry_with_flags()
+    linked      = get_user_linked_accounts(username)
+    snapshots   = get_user_snapshots(username)
+    verified    = is_email_verified(username)
+    user_email  = get_verified_email(username)
+    flagged     = sum(1 for r in reg_data if r["flagged"])
+    total_h     = sum(r["n_holders"] for r in reg_data)
+    market      = get_market_bar()
 
-    html=f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Vulcan — Registry</title>
+    # Build linked accounts HTML
+    linked_html = ""
+    for a in linked:
+        linked_html += f"""<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:var(--surface2);border-radius:8px;margin-bottom:6px;border:1px solid rgba(52,211,153,.15);">
+            <div>
+                <div style="font-weight:700;font-size:13px;">{a["institution"]}</div>
+                <div style="font-size:10px;color:var(--text3);">Linked {a["linked_at"][:10]}</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;">
+                <span class="bdg bbull">✓ Verified</span>
+                <button class="btn bd" style="padding:3px 9px;font-size:10px;" onclick="refreshHoldings()">↻ Refresh</button>
+            </div>
+        </div>"""
+    if not linked_html:
+        linked_html = """<div style="padding:20px;text-align:center;color:var(--text3);font-size:13px;">
+            No brokerage accounts linked yet. Connect one below to register verified holdings.
+        </div>"""
+
+    # Build snapshots HTML
+    snap_html = ""
+    for s in snapshots:
+        holdings_preview = ", ".join([f"{h['ticker']} ({h['quantity']})" for h in s["holdings"][:5]])
+        if len(s["holdings"]) > 5:
+            holdings_preview += f" +{len(s['holdings'])-5} more"
+        snap_html += f"""<div style="padding:12px 14px;background:var(--surface2);border-radius:8px;margin-bottom:8px;border:1px solid var(--border);">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;">
+                <div style="font-weight:700;font-size:13px;">{s["institution"]}</div>
+                <div style="font-size:10px;color:var(--text3);font-family:'JetBrains Mono',monospace;">#{s["hash"]}</div>
+            </div>
+            <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">{s["timestamp"][:19].replace("T"," ")}</div>
+            <div style="font-size:12px;color:var(--text2);">{holdings_preview}</div>
+        </div>"""
+    if not snap_html:
+        snap_html = "<div style=\"padding:16px;text-align:center;color:var(--text3);font-size:13px;\">No snapshots yet.</div>"
+
+    # Build registry table
+    reg_rows = ""
+    for r in reg_data:
+        fs = f"{r['float_shares']:,}" if r["float_shares"] else "N/A"
+        verified_badge = '<span class="bdg bbull">✓ Verified</span>' if r["verified"] else '<span class="bdg bwarn">Unverified</span>'
+        flag_badge = f'<span class="bdg" style="background:rgba(244,63,94,.1);color:var(--danger);border-color:rgba(244,63,94,.2);">⚠ {r["flag_reason"]}</span>' if r["flagged"] else '<span class="bdg" style="background:rgba(52,211,153,.1);color:var(--vir-l);border-color:rgba(52,211,153,.2);">✓ Clean</span>'
+        reg_rows += f"<tr><td style='color:var(--text);font-weight:700;'>{r['ticker']}</td><td>{r['community_shares']:,}</td><td style='color:var(--text3);'>{fs}</td><td>{r['n_holders']}</td><td>{verified_badge}</td><td>{flag_badge}</td></tr>"
+    if not reg_rows:
+        reg_rows = "<tr><td colspan='6' style='color:var(--text3);text-align:center;padding:36px;'>No verified holdings registered yet.</td></tr>"
+
+    # Email verification banner
+    verif_banner = ""
+    if not verified:
+        verif_banner = f"""<div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:10px;padding:14px 18px;margin-bottom:18px;font-size:13px;color:var(--warn);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+            <span>⚠ Your email is not verified. Verify it to link brokerage accounts.</span>
+            <button class="btn" style="background:rgba(245,158,11,.15);color:var(--warn);border:1px solid rgba(245,158,11,.3);padding:5px 12px;font-size:11px;" onclick="resendVerif()">Resend Email</button>
+        </div>"""
+
+    html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Vulcan — Share Registry</title>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
 <style>{CSS}</style></head>
 <body>{sidebar("registry")}
 <div class="main">
 <div class="mbar">{mbar_html(market)}</div>
-<div class="ph"><div class="pt">Public Share Registry</div><div class="ps">Community holdings · Cross-referenced against real float data · Fraud detection</div></div>
+<div class="ph">
+  <div class="pt">Share Registry</div>
+  <div class="ps">Plaid-verified brokerage holdings · Timestamped snapshots · Fraud detection</div>
+</div>
 <div class="pb">
-  <div style="background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.15);border-radius:12px;padding:14px 18px;margin-bottom:20px;font-size:13px;color:var(--text2);line-height:1.7;" class="fi">
-    ℹ️ <strong style="color:var(--text);">What is this?</strong> The Share Registry lets community members log their stock holdings.
-    Vulcan cross-references these against Yahoo Finance float data to flag suspicious patterns — like a user claiming an unrealistically high percentage of a company's available shares.
-    This creates a community-powered transparency layer without requiring broker access.
+  {verif_banner}
+
+  <div style="background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.15);border-radius:10px;padding:14px 18px;margin-bottom:18px;font-size:12px;color:var(--text2);line-height:1.7;" class="fi">
+    🔒 <strong style="color:var(--text);">How verification works:</strong>
+    Connect your brokerage via <strong>Plaid</strong> — the same technology used by Cash App, Venmo, and Robinhood.
+    Vulcan takes a <strong>read-only snapshot</strong> of your holdings (no trading, no passwords stored).
+    Each snapshot is timestamped and hashed so it can't be altered. One account per email prevents duplicates.
+    Multiple brokerages per user are supported.
   </div>
-  <div class="sg fi">
-    <div class="sc"><div class="sl">Tracked Tickers</div><div class="sv neu">{len(reg_data)}</div></div>
-    <div class="sc"><div class="sl">Flagged Entries</div><div class="sv {"down" if flagged>0 else "up"}">{flagged}</div><div class="ss">Suspicious activity</div></div>
+
+  <div class="sg fi" style="grid-template-columns:repeat(3,1fr);">
+    <div class="sc"><div class="sl">Verified Tickers</div><div class="sv neu">{len(reg_data)}</div></div>
+    <div class="sc"><div class="sl">Flagged</div><div class="sv {"down" if flagged>0 else "up"}">{flagged}</div><div class="ss">Suspicious patterns</div></div>
     <div class="sc"><div class="sl">Total Holders</div><div class="sv neu">{total_h}</div></div>
   </div>
-  <div class="card fi fi1" style="margin-bottom:20px;">
-    <div class="ct">📝 Register a Holding</div>
-    <p style="font-size:12px;color:var(--text3);margin-bottom:14px;">Voluntarily log your real stock holdings. Only share counts are public — your username and buy price are kept private.</p>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:10px;flex-wrap:wrap;">
-      <div><label class="fl">Ticker</label><input type="text" id="ht" class="inp" placeholder="AAPL"></div>
-      <div><label class="fl">Shares</label><input type="number" id="hs" class="inp" placeholder="10"></div>
-      <div><label class="fl">Avg Buy Price</label><input type="number" id="hp" class="inp" placeholder="150.00"></div>
-      <div style="display:flex;align-items:flex-end;"><button class="btn bg2" onclick="addH()">+ Register</button></div>
-    </div>
-  </div>
-  <div class="card fi fi2" style="margin-bottom:20px;">
-    <div class="ct">My Registered Holdings</div>
-    <div class="tw"><table><thead><tr><th>Ticker</th><th>Shares</th><th>Buy Price</th><th>Action</th></tr></thead><tbody>{hr}</tbody></table></div>
-  </div>
-  <div class="card fi fi3">
+
+  <div class="card fi fi1" style="margin-bottom:16px;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
-      <div class="ct" style="margin-bottom:0;">Community Registry</div>
-      <button class="btn bo" onclick="location.reload()" style="font-size:11px;padding:6px 12px;">↻ Refresh</button>
+      <div class="ct" style="margin-bottom:0;">🏦 Linked Brokerage Accounts</div>
+      {"" if not verified else '<button class="btn bg2" onclick="linkBrokerage()" style="font-size:11px;">+ Connect Brokerage</button>'}
     </div>
-    <div class="tw"><table><thead><tr><th>Ticker</th><th>Community Shares</th><th>Real Float</th><th>Holders</th><th>Status</th></tr></thead><tbody>{reg_rows}</tbody></table></div>
-    <div style="margin-top:14px;padding:13px;background:var(--surface2);border-radius:10px;font-size:11px;color:var(--text3);line-height:1.7;">
-      🔍 <strong style="color:var(--text2);">Fraud detection logic:</strong> Entries are flagged when (1) community claims exceed 0.01% of a stock's real float — a statistically impossible level for a small app — or (2) multiple users report identical share counts, a common sign of fabricated data.
+    {linked_html}
+    {"" if verified else '<div style="margin-top:10px;font-size:11px;color:var(--text3);">Verify your email first to link accounts.</div>'}
+  </div>
+
+  <div class="card fi fi1" style="margin-bottom:16px;">
+    <div class="ct">📸 My Holdings Snapshots</div>
+    <p style="font-size:11px;color:var(--text3);margin-bottom:12px;">Each snapshot is cryptographically hashed and timestamped. You can take a new snapshot any time to update your registered holdings.</p>
+    {snap_html}
+  </div>
+
+  <div class="card fi fi2">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+      <div class="ct" style="margin-bottom:0;">🌐 Community Registry</div>
+      <button class="btn bo" onclick="location.reload()" style="font-size:10px;padding:5px 10px;">↻ Refresh</button>
+    </div>
+    <div class="tw">
+      <table>
+        <thead><tr><th>Ticker</th><th>Community Shares</th><th>Real Float</th><th>Holders</th><th>Verification</th><th>Status</th></tr></thead>
+        <tbody>{reg_rows}</tbody>
+      </table>
+    </div>
+    <div style="margin-top:12px;padding:12px;background:var(--surface2);border-radius:8px;font-size:11px;color:var(--text3);line-height:1.7;">
+      🔍 <strong style="color:var(--text2);">Fraud detection:</strong> Entries are flagged when community claims exceed 0.1% of a stock's real float, which is statistically impossible for a small platform.
+      All holdings must be verified through Plaid — manual entries are not accepted.
     </div>
   </div>
 </div></div>
+
 <script>
-function addH(){{var t=document.getElementById('ht').value.trim().toUpperCase(),s=parseFloat(document.getElementById('hs').value),p=parseFloat(document.getElementById('hp').value);if(!t||!s||!p){{alert('Please fill all fields.');return;}}fetch('/add_holding',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{ticker:t,shares:s,buy_price:p}})}}).then(()=>location.reload());}}
-function rmH(i){{fetch('/remove_holding',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{index:i}})}}).then(()=>location.reload());}}
-</script></body></html>"""
+async function linkBrokerage() {{
+  const r = await fetch('/registry/link-token');
+  const d = await r.json();
+  if(d.error) {{ alert('Error: ' + d.error); return; }}
+  const handler = Plaid.create({{
+    token: d.link_token,
+    onSuccess: async (publicToken, metadata) => {{
+      const institution = metadata.institution ? metadata.institution.name : 'Unknown';
+      const btn = document.createElement('div');
+      document.body.insertAdjacentHTML('afterbegin', '<div id="plaidLoading" style="position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;display:flex;align-items:center;justify-content:center;color:white;font-size:16px;font-family:Outfit,sans-serif;">Importing holdings from ' + institution + '...</div>');
+      const res = await fetch('/registry/exchange-token', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{ public_token: publicToken, institution }})
+      }});
+      const data = await res.json();
+      document.getElementById('plaidLoading').remove();
+      if(data.error) {{ alert('Error: ' + data.error); return; }}
+      alert('✓ Connected ' + institution + '! ' + (data.holdings||[]).length + ' holdings imported.');
+      location.reload();
+    }},
+    onExit: (err) => {{ if(err) console.log('Plaid exit:', err); }}
+  }});
+  handler.open();
+}}
+
+async function refreshHoldings() {{
+  document.body.insertAdjacentHTML('afterbegin', '<div id="refreshLoading" style="position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;display:flex;align-items:center;justify-content:center;color:white;font-size:16px;font-family:Outfit,sans-serif;">Refreshing holdings...</div>');
+  const r = await fetch('/registry/refresh', {{method:'POST'}});
+  const d = await r.json();
+  document.getElementById('refreshLoading').remove();
+  if(d.error) {{ alert('Error: ' + d.error); return; }}
+  alert('Holdings refreshed!');
+  location.reload();
+}}
+
+async function resendVerif() {{
+  const r = await fetch('/registry/resend-verif', {{method:'POST'}});
+  const d = await r.json();
+  alert(d.message || 'Verification email sent!');
+}}
+</script>
+</body></html>"""
     return html
 
 @app.route("/alerts")
@@ -810,6 +969,40 @@ function saveSettings(){{fetch('/save_settings',{{method:'POST',headers:{{'Conte
 </script></body></html>"""
     return html
 
+
+@app.route("/registry/link-token")
+def registry_link_token():
+    if not logged_in(): return jsonify({"error":"Unauthorized"}),401
+    if not is_email_verified(me()):
+        return jsonify({"error":"Please verify your email before linking accounts."})
+    return jsonify(create_link_token(me()))
+
+@app.route("/registry/exchange-token", methods=["POST"])
+def registry_exchange_token():
+    if not logged_in(): return jsonify({"error":"Unauthorized"}),401
+    if not is_email_verified(me()):
+        return jsonify({"error":"Email not verified."})
+    d = request.json
+    public_token  = d.get("public_token","")
+    institution   = d.get("institution","Unknown")
+    if not public_token: return jsonify({"error":"No token provided."})
+    return jsonify(exchange_public_token(me(), public_token, institution))
+
+@app.route("/registry/refresh", methods=["POST"])
+def registry_refresh():
+    if not logged_in(): return jsonify({"error":"Unauthorized"}),401
+    return jsonify(refresh_holdings(me()))
+
+@app.route("/registry/resend-verif", methods=["POST"])
+def registry_resend_verif():
+    if not logged_in(): return jsonify({"error":"Unauthorized"}),401
+    users = load_users()
+    u = me()
+    email = users.get(u,{}).get("email","")
+    if not email: return jsonify({"message":"No email on file."})
+    base = request.host_url.rstrip("/")
+    send_verification_email(u, email, base)
+    return jsonify({"message":f"Verification email sent to {email}."})
 
 @app.route("/run")
 def run():
