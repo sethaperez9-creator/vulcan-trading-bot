@@ -27,6 +27,19 @@ from registry import (
 HCAPTCHA_SITE_KEY=os.environ.get("HCAPTCHA_SITE_KEY","")
 
 app=Flask(__name__)
+from apscheduler.schedulers.background import BackgroundScheduler
+
+def scheduled_bot():
+    users = load_users()
+    for username in users:
+        portfolio = load_portfolio(username)
+        strat = portfolio.get("strategy", "balanced")
+        run_bot(username, strat)
+        print(f"[vulcan] Scheduled bot run for {username} ({strat})")
+
+scheduler = BackgroundScheduler()
+scheduler.add_job(scheduled_bot, "interval", minutes=30)
+scheduler.start()
 app.secret_key=secrets.token_hex(32)
 USERS_FILE="users.json"
 HOLDINGS_FILE="holdings.json"
