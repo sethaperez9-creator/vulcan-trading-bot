@@ -5,3 +5,4 @@ flask
 numpy
 python-dotenv
 plotly
+apscheduler
