@@ -277,10 +277,20 @@ STRATEGIES = {
 
 # Extended scan list — bot always scans these regardless of watchlist
 BOT_SCAN = [
+    # Tech
     "AAPL","MSFT","NVDA","TSLA","AMZN","GOOGL","META","AMD","NFLX",
-    "SPY","QQQ","JPM","BAC","DIS","UBER","SHOP","PYPL","INTC","MU",
+    "INTC","MU","QCOM","AVGO","CRM","ORCL","IBM","SNOW","PLTR","NET",
+    # Finance
+    "JPM","BAC","GS","MS","WFC","C","AXP","BLK","V","MA",
+    # Consumer
+    "DIS","UBER","SHOP","PYPL","NKE","SBUX","MCD","TGT","WMT","COST",
+    # Health
+    "JNJ","PFE","MRNA","ABBV","UNH","CVS","LLY","TMO",
+    # Energy
+    "XOM","CVX","COP","SLB",
+    # ETFs
+    "SPY","QQQ","IWM","XLF","XLK","XLE","XLV",
 ]
-
 def run_bot(username, strategy="balanced"):
     cfg       = STRATEGIES.get(strategy, STRATEGIES["balanced"])
     portfolio = load_portfolio(username)
@@ -288,9 +298,20 @@ def run_bot(username, strategy="balanced"):
 
     # Merge watchlist + built-in scan list, deduplicated
     watchlist = load_watchlist()
-    scan = list(dict.fromkeys(watchlist + BOT_SCAN))  # watchlist first, no dupes
+    import random
+    full_scan = list(dict.fromkeys(watchlist + BOT_SCAN))
+    # Always include watchlist, randomly sample from the rest
+    extra = [t for t in full_scan if t not in watchlist]
+    random.shuffle(extra)
+    scan = watchlist + extra[:15]  # cap at 15 + watchlist stocks per run
 
     open_positions = sum(1 for p in portfolio["positions"].values() if p.get("shares", 0) > 0)
+    cooldowns = portfolio.get("cooldowns", {})
+    now = datetime.now()
+    # Clear expired cooldowns (24 hour cooldown)
+    cooldowns = {t: ts for t, ts in cooldowns.items() 
+                 if (now - datetime.fromisoformat(ts)).total_seconds() < 86400}
+    portfolio["cooldowns"] = cooldowns
 
     for ticker in scan:
         data = analyze_stock(ticker)
@@ -331,6 +352,7 @@ def run_bot(username, strategy="balanced"):
                     "reason": "stop-loss" if pnl_pct<=-8 else "take-profit" if pnl_pct>=15 else "signal",
                     "proba": proba
                 })
+                portfolio["cooldowns"][ticker] = datetime.now().isoformat()
             continue  # don't try to buy something we already hold
 
         # ── BUY logic ─────────────────────────────────────────────────────────
@@ -339,7 +361,8 @@ def run_bot(username, strategy="balanced"):
 
         if portfolio["cash"] < price:
             continue  # can't afford even 1 share
-
+        if ticker in cooldowns:
+            continue
         # Buy signal: prediction==1 AND any supporting indicator
         # Deliberately loose — at least ONE indicator must agree
         signal_count = sum([

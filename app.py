@@ -638,6 +638,7 @@ function getRecs(){{
 def trading():
     if not logged_in(): return redirect(url_for("login"))
     portfolio=load_portfolio(me())
+    strat = portfolio.get("strategy", "balanced")
     starting=portfolio.get("starting_cash",10000)
     cash=portfolio.get("cash",starting)
     positions=portfolio.get("positions",{})
@@ -676,7 +677,7 @@ def trading():
 <div class="mbar">{mbar_html(market)}</div>
 <div class="ph">
   <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;" class="ph-row">
-    <div><div class="pt">Paper Trading</div><div class="ps">AI-driven autonomous trading · {me()}'s portfolio · Strategy: balanced</div></div>
+    <div><div class="pt">Paper Trading</div><div class="ps">AI-driven autonomous trading · {me()}'s portfolio · Strategy: {strat}</div></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;">
       <button class="btn bg2" onclick="runBot()" id="runBtn">▶ Run Bot</button>
       <button class="btn bo" onclick="document.getElementById('cashModal').classList.add('open')">💰 Set Cash</button>
@@ -721,27 +722,43 @@ def trading():
     <div style="font-size:18px;font-weight:800;margin-bottom:6px;">Trading Strategy</div>
     <div style="font-size:12px;color:var(--text3);margin-bottom:20px;">Choose how the bot decides when to buy and sell.</div>
     <div style="display:flex;flex-direction:column;gap:10px;">
-      <div onclick="setStrat('aggressive')" style="padding:14px;border-radius:10px;border:1px solid var(--border);cursor:pointer;transition:all .15s;" onmouseover="this.style.borderColor='var(--vir)'" onmouseout="this.style.borderColor='var(--border)'">
-        <div style="font-weight:700;color:var(--vir-l);margin-bottom:4px;">🚀 Aggressive</div>
-        <div style="font-size:12px;color:var(--text3);">Buys on weaker signals, larger position sizes (35%). More trades, more volatility. Best for bull markets.</div>
-      </div>
-      <div onclick="setStrat('balanced')" style="padding:14px;border-radius:10px;border:1px solid var(--indigo);cursor:pointer;background:rgba(99,102,241,.05);transition:all .15s;">
-        <div style="font-weight:700;color:var(--indigo-l);margin-bottom:4px;">⚖ Balanced (Current)</div>
-        <div style="font-size:12px;color:var(--text3);">Moderate signal threshold, balanced position sizes (28%). Good for most market conditions.</div>
-      </div>
-      <div onclick="setStrat('conservative')" style="padding:14px;border-radius:10px;border:1px solid var(--border);cursor:pointer;transition:all .15s;" onmouseover="this.style.borderColor='var(--warn)'" onmouseout="this.style.borderColor='var(--border)'">
-        <div style="font-weight:700;color:var(--warn);margin-bottom:4px;">🛡 Conservative</div>
-        <div style="font-size:12px;color:var(--text3);">Only buys on high-confidence signals, smaller positions (20%). Fewer trades, lower risk. Best for volatile markets.</div>
+      <div onclick="setStrat('aggressive')" id="strat-aggressive" style="padding:14px;border-radius:10px;border:1px solid var(--border);cursor:pointer;transition:all .15s;">
+  <div style="font-weight:700;color:var(--vir-l);margin-bottom:4px;">🚀 Aggressive</div>
+  <div style="font-size:12px;color:var(--text3);">Buys on weaker signals, larger position sizes (35%). More trades, more volatility. Best for bull markets.</div>
+</div>
+<div onclick="setStrat('balanced')" id="strat-balanced" style="padding:14px;border-radius:10px;border:1px solid var(--border);cursor:pointer;transition:all .15s;">
+  <div style="font-weight:700;color:var(--indigo-l);margin-bottom:4px;">⚖ Balanced</div>
+  <div style="font-size:12px;color:var(--text3);">Moderate signal threshold, balanced position sizes (28%). Good for most market conditions.</div>
+</div>
+<div onclick="setStrat('conservative')" id="strat-conservative" style="padding:14px;border-radius:10px;border:1px solid var(--border);cursor:pointer;transition:all .15s;">
+  <div style="font-weight:700;color:var(--warn);margin-bottom:4px;">🛡 Conservative</div>
+  <div style="font-size:12px;color:var(--text3);">Only buys on high-confidence signals, smaller positions (20%). Fewer trades, lower risk. Best for volatile markets.</div>
+</div>
+
       </div>
     </div>
   </div>
 </div>
 {CHART_MODAL}{CHART_JS}
 <script>
-var _strat='balanced';
+var _strat='{strat}';
+['aggressive','balanced','conservative'].forEach(x=>{{
+  var el=document.getElementById('strat-'+x);
+  if(el){{el.style.border=x===_strat?'1px solid var(--indigo)':'1px solid var(--border)';el.style.background=x===_strat?'rgba(99,102,241,.05)':'none';}}
+}});
 function runBot(){{var btn=document.getElementById('runBtn');btn.disabled=true;btn.textContent='⏳ Running...';fetch('/run?strategy='+_strat).then(r=>r.json()).then(()=>{{btn.textContent='✓ Done!';setTimeout(()=>location.reload(),900);}}).catch(()=>{{btn.disabled=false;btn.textContent='▶ Run Bot';}});}}
 function setCash(){{var a=parseFloat(document.getElementById('cashAmt').value);if(!a||a<100)return;fetch('/set_cash',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{amount:a}})}}).then(()=>location.reload());}}
-function setStrat(s){{_strat=s;document.getElementById('stratModal').classList.remove('open');document.querySelector('.ps').textContent='AI-driven autonomous trading · {me()}\\'s portfolio · Strategy: '+s;}}
+function setStrat(s){{
+  _strat=s;
+  document.getElementById('stratModal').classList.remove('open');
+  document.querySelector('.ps').textContent='AI-driven autonomous trading · {me()}\\'s portfolio · Strategy: '+s;
+  fetch('/set_strategy',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{strategy:s}})}});
+  ['aggressive','balanced','conservative'].forEach(x=>{{
+    var el=document.getElementById('strat-'+x);
+    el.style.border=x===s?'1px solid var(--indigo)':'1px solid var(--border)';
+    el.style.background=x===s?'rgba(99,102,241,.05)':'none';
+  }});
+}}
 </script></body></html>"""
     return html
 
@@ -1015,6 +1032,7 @@ def registry_resend_verif():
     if not email: return jsonify({"message":"No email on file."})
     base = request.host_url.rstrip("/")
     sent = send_verification_email(u, email, base)
+    print(f"[debug] resend verif → sent={sent}, email={email}, GMAIL_USER={GMAIL_USER}")  # add this
     return jsonify({"message": f"Verification email sent to {email}.", "sent": sent})
 
 @app.route("/run")
@@ -1126,6 +1144,16 @@ def remove_holding():
         with open(HOLDINGS_FILE,"w",encoding="utf-8") as f: json.dump(holdings,f)
         update_registry(me(),t,0,0,"remove")
     return jsonify({"status":"removed"})
+
+@app.route("/set_strategy", methods=["POST"])
+def set_strategy():
+    if not logged_in(): return jsonify({"error":"Unauthorized"}),401
+    strat = request.json.get("strategy","balanced")
+    if strat not in STRATEGIES: return jsonify({"error":"Invalid strategy"}),400
+    portfolio = load_portfolio(me())
+    portfolio["strategy"] = strat
+    save_portfolio(me(), portfolio)
+    return jsonify({"status":"saved"})
 
 if __name__=="__main__":
     app.run(debug=True,host="0.0.0.0")

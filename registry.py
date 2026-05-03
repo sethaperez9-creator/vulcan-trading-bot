@@ -11,12 +11,27 @@ from email.mime.multipart import MIMEMultipart
 from trader import _safe_load, _safe_save
 
 # ── Config from environment / .env ────────────────────────────────────────────
+def _load_env_registry():
+    import pathlib
+    env_path = pathlib.Path(__file__).parent / ".env"
+    if not env_path.exists():
+        return
+    with open(env_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip())
+
+_load_env_registry()
+
 def _env(key, default=""):
     return os.environ.get(key, default)
 
 PLAID_CLIENT_ID  = _env("PLAID_CLIENT_ID")
 PLAID_SECRET     = _env("PLAID_SECRET")
-PLAID_ENV        = _env("PLAID_ENV", "development")
+PLAID_ENV        = _env("PLAID_ENV", "sandbox")
 HCAPTCHA_SECRET  = _env("HCAPTCHA_SECRET")
 GMAIL_USER       = _env("GMAIL_USER")
 GMAIL_APP_PW     = _env("GMAIL_APP_PASSWORD")
