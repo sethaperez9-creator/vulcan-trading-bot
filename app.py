@@ -90,6 +90,29 @@ CSS = """
 --text:#e2e8f0;--text2:#94a3b8;--text3:#475569;
 --sw:200px;--r:12px;--rs:7px;
 }
+[data-theme="light"]{
+--bg:#f1f5f9;--surface:#ffffff;--surface2:#f8fafc;--border:#e2e8f0;--border2:#cbd5e1;
+--text:#0f172a;--text2:#334155;--text3:#64748b;
+}
+[data-theme="light"] .sb{background:#ffffff;border-right:1px solid #e2e8f0;}
+[data-theme="light"] .mbar{background:#ffffff;border-bottom:1px solid #e2e8f0;}
+[data-theme="light"] .ph{background:rgba(255,255,255,.9);}
+[data-theme="light"] .ni:hover{background:rgba(99,102,241,.08);}
+[data-theme="light"] .ni.active{background:linear-gradient(135deg,rgba(99,102,241,.12),rgba(45,158,122,.08));}
+[data-theme="light"] .uc{background:#f8fafc;border-color:#e2e8f0;}
+[data-theme="light"] .card{background:#ffffff;border-color:#e2e8f0;}
+[data-theme="light"] .sc{background:#ffffff;border-color:#e2e8f0;}
+[data-theme="light"] .card::before{background:linear-gradient(90deg,transparent,rgba(99,102,241,.2),transparent);}
+[data-theme="light"] th{background:#f8fafc;color:#64748b;}
+[data-theme="light"] td{color:#334155;}
+[data-theme="light"] .inp{background:#f8fafc;border-color:#e2e8f0;color:#0f172a;}
+[data-theme="light"] .mo .mb{background:#ffffff;border-color:#e2e8f0;}
+[data-theme="light"] .stk{background:#ffffff;border-color:#e2e8f0;}
+[data-theme="light"] .ms{background:#f8fafc;}
+[data-theme="light"] .lo{color:#64748b;}
+[data-theme="light"] .lo:hover{color:#f43f5e;background:rgba(244,63,94,.08);}
+[data-theme="light"] .sb-foot{border-top-color:#e2e8f0;}
+[data-theme="light"] .sb-nav .nav-s{color:#94a3b8;}
 html,body{height:100%;overflow-x:hidden;}
 body{font-family:Outfit,sans-serif;background:var(--bg);color:var(--text);display:flex;min-height:100vh;font-size:14px;}
 /* ── sidebar ── */
@@ -102,7 +125,7 @@ body{font-family:Outfit,sans-serif;background:var(--bg);color:var(--text);displa
 .nav-s{font-size:8px;text-transform:uppercase;letter-spacing:2px;color:var(--text3);padding:8px 8px 4px;}
 .ni{display:flex;align-items:center;gap:8px;padding:9px 10px;border-radius:var(--rs);color:var(--text2);text-decoration:none;font-size:13px;font-weight:500;transition:all .15s;position:relative;cursor:pointer;border:none;background:none;width:100%;text-align:left;font-family:Outfit,sans-serif;}
 .ni:hover{background:rgba(99,102,241,.08);color:var(--text);}
-.ni.active{background:linear-gradient(135deg,rgba(99,102,241,.15),rgba(45,158,122,.1));color:var(--indigo-l);border:1px solid rgba(99,102,241,.2);}
+.ni.active{background:linear-gradient(135deg,rgba(99,102,241,.15),rgba(45,158,122,.1));color:var(--indigo-l);border:1px solid rgba(99,102,241,.2);border-left:3px solid var(--indigo);}
 .ni.active::before{content:'';position:absolute;left:0;top:20%;bottom:20%;width:3px;background:linear-gradient(180deg,var(--indigo),var(--vir));border-radius:0 3px 3px 0;}
 .ni-ic{font-size:15px;width:18px;text-align:center;}
 .sb-foot{padding:10px 8px;border-top:1px solid var(--border);}
@@ -336,12 +359,27 @@ def sidebar(active):
       <div class="ua">{ini}</div>
       <div><div class="un">{u}</div><div class="ur">Trader</div></div>
     </div>
+    <button onclick="toggleTheme()" class="lo" style="border:none;cursor:pointer;width:100%;text-align:left;" id="themeBtn">🌙 Dark Mode</button>
     <a href="/logout" class="lo">↩ Sign out</a>
   </div>
 </aside>
 <script>
 function toggleSB(){{document.getElementById('sb').classList.toggle('open');document.getElementById('sbo').classList.toggle('show');}}
 function closeSB(){{document.getElementById('sb').classList.remove('open');document.getElementById('sbo').classList.remove('show');}}
+function toggleTheme(){{
+  var current=document.body.getAttribute('data-theme');
+  var next=current==='light'?'dark':'light';
+  document.body.setAttribute('data-theme',next);
+  localStorage.setItem('vulcan-theme',next);
+  document.getElementById('themeBtn').textContent=next==='light'?'🌙 Dark Mode':'☀️ Light Mode';
+}}
+// Load saved theme
+(function(){{
+  var t=localStorage.getItem('vulcan-theme')||'dark';
+  document.body.setAttribute('data-theme',t);
+  var btn=document.getElementById('themeBtn');
+  if(btn) btn.textContent=t==='light'?'🌙 Dark Mode':'☀️ Light Mode';
+}})();
 </script>"""
 
 def mbar_html(items):
