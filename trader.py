@@ -291,6 +291,7 @@ BOT_SCAN = [
     # ETFs
     "SPY","QQQ","IWM","XLF","XLK","XLE","XLV",
 ]
+
 def run_bot(username, strategy="balanced"):
     cfg       = STRATEGIES.get(strategy, STRATEGIES["balanced"])
     portfolio = load_portfolio(username)
@@ -394,6 +395,21 @@ def run_bot(username, strategy="balanced"):
                 "price": price, "shares": shares, "total": cost,
                 "confidence": confidence, "proba": proba, "signals": signal_count
             })
+
+    # Snapshot portfolio value for graph
+    total_value = portfolio["cash"] + sum(
+        pos["shares"] * pos["buy_price"]
+        for pos in portfolio["positions"].values()
+        if pos.get("shares", 0) > 0
+    )
+    if "history" not in portfolio:
+        portfolio["history"] = []
+    portfolio["history"].append({
+        "time": datetime.now().strftime("%Y-%m-%d"),
+        "value": round(total_value, 2)
+    })
+    # Keep last 365 snapshots
+    portfolio["history"] = portfolio["history"][-365:]
 
     save_portfolio(username, portfolio)
     return portfolio

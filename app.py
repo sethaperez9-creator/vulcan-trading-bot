@@ -318,8 +318,8 @@ function closeChart(){
 
 def sidebar(active):
     u=me(); ini=u[0].upper() if u else "?"
-    pages=[("home","🏠","Home","/"),("trading","🤖","Paper Trading","/trading"),
-           ("registry","📊","Share Registry","/registry"),("alerts","🔔","Alerts","/alerts")]
+    pages=[("dashboard","⚡","Dashboard","/dashboard"),("home","🏠","Market","/"),("trading","🤖","Paper Trading","/trading"),
+       ("registry","📊","Share Registry","/registry"),("alerts","🔔","Alerts","/alerts")]
     nav="".join([f'<a href="{href}" class="ni {"active" if active==pid else ""}"><span class="ni-ic">{ic}</span>{lb}</a>'
                  for pid,ic,lb,href in pages])
     return f"""
@@ -651,6 +651,8 @@ function getRecs(){{
 def trading():
     if not logged_in(): return redirect(url_for("login"))
     portfolio=load_portfolio(me())
+    history=portfolio.get("history",[])
+    history_json=json.dumps(history)
     strat = portfolio.get("strategy", "balanced")
     starting=portfolio.get("starting_cash",10000)
     cash=portfolio.get("cash",starting)
@@ -694,6 +696,7 @@ def trading():
     <div style="display:flex;gap:8px;flex-wrap:wrap;">
       <button class="btn bg2" onclick="runBot()" id="runBtn">▶ Run Bot</button>
       <button class="btn bo" onclick="document.getElementById('cashModal').classList.add('open')">💰 Set Cash</button>
+      <a href="/export_trades" class="btn bo">📥 Export CSV</a>
       <button class="btn bo" onclick="document.getElementById('stratModal').classList.add('open')">⚙ Strategy</button>
     </div>
   </div>
@@ -714,6 +717,11 @@ def trading():
     <div class="ct">Open Positions</div>
     <div class="tw"><table><thead><tr><th>Ticker</th><th>Shares</th><th>Avg Cost</th><th>Current</th><th>Value</th><th>P&amp;L</th></tr></thead><tbody>{pos_rows}</tbody></table></div>
   </div>
+  <div class="card fi fi2" style="margin-bottom:20px;">
+    <div class="ct">📈 Portfolio Value History</div>
+    <div id="historyChart" style="height:200px;border-radius:10px;overflow:hidden;background:var(--surface2);"></div>
+    <div style="font-size:11px;color:var(--text3);margin-top:8px;">Updated each time the bot runs.</div>
+</div>
   <div class="card fi fi2">
     <div class="ct">Trade History (last 60)</div>
     <div class="tw"><table><thead><tr><th>Action</th><th>Ticker</th><th>Price</th><th>Shares</th><th>Total</th><th>Profit</th><th>Date</th><th>Confidence</th></tr></thead><tbody>{trows}</tbody></table></div>
@@ -772,6 +780,25 @@ function setStrat(s){{
     el.style.background=x===s?'rgba(99,102,241,.05)':'none';
   }});
 }}
+(function(){{
+    var history={history_json};
+    if(!history.length) return;
+    var el=document.getElementById('historyChart');
+    var chart=LightweightCharts.createChart(el,{{
+        width:el.clientWidth,height:200,
+        layout:{{background:{{color:'transparent'}},textColor:'#94a3b8'}},
+        grid:{{vertLines:{{color:'rgba(30,45,69,.5)'}},horzLines:{{color:'rgba(30,45,69,.5)'}}}},
+        rightPriceScale:{{borderColor:'rgba(30,45,69,.8)'}},
+        timeScale:{{borderColor:'rgba(30,45,69,.8)',timeVisible:false}}
+    }});
+    var series=chart.addAreaSeries({{
+        lineColor:'#6366f1',topColor:'rgba(99,102,241,.3)',
+        bottomColor:'rgba(99,102,241,.0)',lineWidth:2
+    }});
+    series.setData(history);
+    chart.timeScale().fitContent();
+}})();
+
 </script></body></html>"""
     return html
 
@@ -1167,6 +1194,167 @@ def set_strategy():
     portfolio["strategy"] = strat
     save_portfolio(me(), portfolio)
     return jsonify({"status":"saved"})
+
+@app.route("/dashboard")
+def dashboard():
+    if not logged_in(): return redirect(url_for("login"))
+    portfolio = load_portfolio(me())
+    starting  = portfolio.get("starting_cash", 10000)
+    cash      = portfolio.get("cash", starting)
+    positions = portfolio.get("positions", {})
+    trades    = portfolio.get("trades", [])
+    strat     = portfolio.get("strategy", "balanced")
+    alerts    = load_alerts()
+    watchlist = load_watchlist()
+    market    = get_market_bar()
+
+    # Portfolio stats
+    total_pv = 0
+    open_positions = []
+    for ticker, pos in positions.items():
+        if pos["shares"] > 0:
+            try:
+                cur = round(yf.Ticker(ticker).history(period="1d")["Close"].iloc[-1], 2)
+                val = round(pos["shares"] * cur, 2)
+                pnl = round((cur - pos["buy_price"]) * pos["shares"], 2)
+                pnl_pct = round(((cur - pos["buy_price"]) / pos["buy_price"]) * 100, 2)
+                total_pv += val
+                open_positions.append({"ticker": ticker, "val": val, "pnl": pnl, "pnl_pct": pnl_pct, "cur": cur})
+            except: pass
+
+    total = round(cash + total_pv, 2)
+    ret   = round(((total - starting) / starting) * 100, 2)
+    rc    = "up" if ret >= 0 else "down"
+
+    # Recent trades (last 5)
+    recent_trades = [t for t in reversed(trades[-5:]) if isinstance(t, dict)]
+
+    # Position rows
+    pos_rows = ""
+    for p in open_positions[:5]:
+        pc = "up" if p["pnl"] >= 0 else "down"
+        pos_rows += f"""<tr>
+            <td style='color:var(--text);font-weight:700;'>{p['ticker']}</td>
+            <td style='font-family:"JetBrains Mono",monospace;'>${p['cur']}</td>
+            <td class='{pc}'>{'+' if p['pnl']>=0 else ''}${p['pnl']}</td>
+            <td class='{pc}'>{'+' if p['pnl_pct']>=0 else ''}{p['pnl_pct']}%</td>
+        </tr>"""
+    if not pos_rows:
+        pos_rows = "<tr><td colspan='4' style='color:var(--text3);text-align:center;padding:20px;'>No open positions.</td></tr>"
+
+    # Recent trade rows
+    trade_rows = ""
+    for t in recent_trades:
+        ac = "up" if t.get("action") == "BUY" else "down"
+        trade_rows += f"""<tr>
+            <td class='{ac}' style='font-weight:700;'>{t.get('action','')}</td>
+            <td style='color:var(--text);font-weight:700;'>{t.get('ticker','')}</td>
+            <td style='font-family:"JetBrains Mono",monospace;'>${t.get('price','')}</td>
+            <td style='color:var(--text3);font-size:10px;'>{t.get('date','')}</td>
+        </tr>"""
+    if not trade_rows:
+        trade_rows = "<tr><td colspan='4' style='color:var(--text3);text-align:center;padding:20px;'>No trades yet.</td></tr>"
+
+    # Alert rows
+    alert_rows = ""
+    for a in alerts[:5]:
+        dc = "up" if a["direction"] == "above" else "down"
+        alert_rows += f"""<tr>
+            <td style='color:var(--text);font-weight:700;'>{a['ticker']}</td>
+            <td class='{dc}'>{a['direction'].capitalize()}</td>
+            <td style='font-family:"JetBrains Mono",monospace;'>${a['target']}</td>
+        </tr>"""
+    if not alert_rows:
+        alert_rows = "<tr><td colspan='3' style='color:var(--text3);text-align:center;padding:20px;'>No active alerts.</td></tr>"
+
+    html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Vulcan — Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>{CSS}</style></head>
+<body>{sidebar("dashboard")}
+<div class="main">
+<div class="mbar">{mbar_html(market)}</div>
+<div class="ph">
+  <div class="pt">Dashboard</div>
+  <div class="ps">Welcome back, {me()} · Strategy: {strat}</div>
+</div>
+<div class="pb">
+  <div class="sg fi" style="margin-bottom:20px;">
+    <div class="sc"><div class="sl">Portfolio Value</div><div class="sv {rc}">${total:,.2f}</div><div class="ss">Started: ${starting:,.2f}</div></div>
+    <div class="sc"><div class="sl">Total Return</div><div class="sv {rc}">{('+' if ret>=0 else '')}{ret}%</div><div class="ss">P&L: ${round(total-starting,2):+,.2f}</div></div>
+    <div class="sc"><div class="sl">Cash Available</div><div class="sv neu">${cash:,.2f}</div><div class="ss">{round((cash/total)*100,1) if total>0 else 100}% of portfolio</div></div>
+    <div class="sc"><div class="sl">Open Positions</div><div class="sv neu">{len(open_positions)}</div><div class="ss">Total trades: {len(trades)}</div></div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;" class="fi fi1">
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <div class="ct" style="margin-bottom:0;">Open Positions</div>
+        <a href="/trading" class="btn bo" style="font-size:10px;padding:4px 10px;">View All →</a>
+      </div>
+      <div class="tw"><table><thead><tr><th>Ticker</th><th>Price</th><th>P&L</th><th>Return</th></tr></thead><tbody>{pos_rows}</tbody></table></div>
+    </div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <div class="ct" style="margin-bottom:0;">Recent Trades</div>
+        <a href="/trading" class="btn bo" style="font-size:10px;padding:4px 10px;">View All →</a>
+      </div>
+      <div class="tw"><table><thead><tr><th>Action</th><th>Ticker</th><th>Price</th><th>Date</th></tr></thead><tbody>{trade_rows}</tbody></table></div>
+    </div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;" class="fi fi2">
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <div class="ct" style="margin-bottom:0;">Active Alerts</div>
+        <a href="/alerts" class="btn bo" style="font-size:10px;padding:4px 10px;">Manage →</a>
+      </div>
+      <div class="tw"><table><thead><tr><th>Ticker</th><th>Direction</th><th>Target</th></tr></thead><tbody>{alert_rows}</tbody></table></div>
+    </div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <div class="ct" style="margin-bottom:0;">Quick Actions</div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <a href="/trading" class="btn bp bblock">🤖 Go to Paper Trading</a>
+        <a href="/" class="btn bg2 bblock">🔍 Market Research</a>
+        <a href="/registry" class="btn bo bblock">📊 Share Registry</a>
+        <a href="/alerts" class="btn bo bblock">🔔 Manage Alerts</a>
+      </div>
+    </div>
+  </div>
+</div></div>
+</body></html>"""
+    return html
+
+@app.route("/export_trades")
+def export_trades():
+    if not logged_in(): return jsonify({"error":"Unauthorized"}),401
+    import csv, io
+    portfolio = load_portfolio(me())
+    trades = [t for t in portfolio.get("trades",[]) if isinstance(t,dict)]
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=["action","ticker","price","shares","total","profit","confidence","date","reason"])
+    writer.writeheader()
+    for t in trades:
+        writer.writerow({
+            "action":     t.get("action",""),
+            "ticker":     t.get("ticker",""),
+            "price":      t.get("price",""),
+            "shares":     t.get("shares",""),
+            "total":      t.get("total",""),
+            "profit":     t.get("profit",""),
+            "confidence": t.get("confidence",""),
+            "date":       t.get("date",""),
+            "reason":     t.get("reason",""),
+        })
+    output.seek(0)
+    from flask import Response
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment;filename=vulcan_trades_{me()}.csv"}
+    )
 
 if __name__=="__main__":
     app.run(debug=True,host="0.0.0.0")
